@@ -106,12 +106,6 @@ export function resolveBiggerContextMultipartParts(
     parsed, capabilities, mode.localTools ? ESTIMATE_TURN_TOKEN : undefined,
     { experimentalMultipartParts: parts, experimentalSkillAttachments },
   );
-  const inline = compile();
-  const inputTokens = estimateCompiledChatGptWebInputTokens(inline, parsed.modelId);
-  const initialParts = parsed._compactionRequest
-    ? CHATGPT_BIGGER_CONTEXT_PARTS
-    : biggerContextStabilityPartCount(inputTokens, autoCompactTokenLimit);
-
   const fits = (compiled: CompiledChatGptWebPrompt): boolean => {
     const messages = compiledChatGptWebMessages(compiled);
     // Inert stages may use any explicitly available staging effort; execution keeps the chosen
@@ -129,6 +123,20 @@ export function resolveBiggerContextMultipartParts(
     }
     return estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId) < contextWindow * messages.length;
   };
+
+  // Compaction must select staged transport before compiling an inline prompt. Otherwise the
+  // retired one-message compaction byte cap can reject history that Bigger Context can carry.
+  if (parsed._compactionRequest) {
+    for (let parts = CHATGPT_BIGGER_CONTEXT_PARTS; parts <= CHATGPT_BIGGER_CONTEXT_MAX_PARTS; parts += 1) {
+      if (!isChatGptWebMultipartPartCount(parts)) continue;
+      if (fits(compile(parts))) return parts;
+    }
+    return CHATGPT_BIGGER_CONTEXT_MAX_PARTS;
+  }
+
+  const inline = compile();
+  const inputTokens = estimateCompiledChatGptWebInputTokens(inline, parsed.modelId);
+  const initialParts = biggerContextStabilityPartCount(inputTokens, autoCompactTokenLimit);
   if (initialParts === undefined && fits(inline)) return undefined;
   const start = initialParts ?? 2;
   for (let parts = start; parts <= CHATGPT_BIGGER_CONTEXT_MAX_PARTS; parts += 1) {
