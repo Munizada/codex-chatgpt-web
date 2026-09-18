@@ -10,8 +10,10 @@ import {
 import type { CodexParsedRequest, CodexUsage } from "../../types";
 import { compiledChatGptWebMessages, estimateChatGptWebImageTokens, estimateCompiledChatGptWebInputTokens } from "./input-tokens";
 import {
+  CHATGPT_BIGGER_CONTEXT_MAX_PARTS,
   CHATGPT_BIGGER_CONTEXT_PARTS,
   compileChatGptWebPrompt,
+  isChatGptWebMultipartPartCount,
   type ChatGptWebMultipartPartCount,
   type CompiledChatGptWebPrompt,
   type CompileChatGptWebPromptOptions,
@@ -23,6 +25,25 @@ import type { BrokerToolRequest } from "./turn-broker";
 // The real capability has the same length. Keeping it out of usage accounting would make
 // estimates differ slightly between the prepared browser prompt and later Codex tool rounds.
 const ESTIMATE_TURN_TOKEN = "turn_00000000000000000000000000000000";
+
+/**
+ * Keep Bigger Context staging messages below the practical browser/DOM stress point seen with
+ * very large composer submissions. Multipart still starts only after the native auto-compact
+ * threshold; once active, it prefers roughly 40k input tokens per physical ChatGPT message.
+ */
+export const CHATGPT_BIGGER_CONTEXT_TARGET_STAGE_TOKENS = 40_000;
+
+export function biggerContextStabilityPartCount(
+  inputTokens: number,
+  autoCompactTokenLimit: number,
+): ChatGptWebMultipartPartCount | undefined {
+  if (inputTokens < autoCompactTokenLimit) return undefined;
+  return biggerContextPartCount(
+    inputTokens,
+    Math.min(autoCompactTokenLimit, CHATGPT_BIGGER_CONTEXT_TARGET_STAGE_TOKENS),
+    false,
+  );
+}
 
 export interface ChatGptWebRoundEvidence {
   answer?: string;
@@ -76,7 +97,6 @@ export function resolveBiggerContextMultipartParts(
     throw new Error("Bigger Context is unavailable for Luna because its accumulated browser transcript still shares one 28,000-token transport budget");
   }
   const mode = resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, capabilities);
-  if (parsed._compactionRequest) return CHATGPT_BIGGER_CONTEXT_PARTS;
   const { contextWindow, autoCompactTokenLimit } = resolveChatGptWebContextLimits(
     CHATGPT_WEB_BACKEND_MODEL,
     mode.effort,
@@ -86,11 +106,6 @@ export function resolveBiggerContextMultipartParts(
     parsed, capabilities, mode.localTools ? ESTIMATE_TURN_TOKEN : undefined,
     { experimentalMultipartParts: parts, experimentalSkillAttachments },
   );
-  const inline = compile();
-  const inputTokens = estimateCompiledChatGptWebInputTokens(inline, parsed.modelId);
-  const initialParts = biggerContextPartCount(inputTokens, autoCompactTokenLimit, false);
-  if (initialParts === CHATGPT_BIGGER_CONTEXT_PARTS) return initialParts;
-
   const fits = (compiled: CompiledChatGptWebPrompt): boolean => {
     const messages = compiledChatGptWebMessages(compiled);
     // Inert stages may use any explicitly available staging effort; execution keeps the chosen
@@ -108,8 +123,27 @@ export function resolveBiggerContextMultipartParts(
     }
     return estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId) < contextWindow * messages.length;
   };
+
+  // Compaction must select staged transport before compiling an inline prompt. Otherwise the
+  // retired one-message compaction byte cap can reject history that Bigger Context can carry.
+  if (parsed._compactionRequest) {
+    for (let parts = CHATGPT_BIGGER_CONTEXT_PARTS; parts <= CHATGPT_BIGGER_CONTEXT_MAX_PARTS; parts += 1) {
+      if (!isChatGptWebMultipartPartCount(parts)) continue;
+      if (fits(compile(parts))) return parts;
+    }
+    return CHATGPT_BIGGER_CONTEXT_MAX_PARTS;
+  }
+
+  const inline = compile();
+  const inputTokens = estimateCompiledChatGptWebInputTokens(inline, parsed.modelId);
+  const initialParts = biggerContextStabilityPartCount(inputTokens, autoCompactTokenLimit);
   if (initialParts === undefined && fits(inline)) return undefined;
-  return fits(compile(2)) ? 2 : CHATGPT_BIGGER_CONTEXT_PARTS;
+  const start = initialParts ?? 2;
+  for (let parts = start; parts <= CHATGPT_BIGGER_CONTEXT_MAX_PARTS; parts += 1) {
+    if (!isChatGptWebMultipartPartCount(parts)) continue;
+    if (fits(compile(parts))) return parts;
+  }
+  return CHATGPT_BIGGER_CONTEXT_MAX_PARTS;
 }
 
 export function biggerContextPartCount(
@@ -117,10 +151,15 @@ export function biggerContextPartCount(
   onePartLimit: number,
   compaction: boolean,
 ): ChatGptWebMultipartPartCount | undefined {
-  if (compaction) return CHATGPT_BIGGER_CONTEXT_PARTS;
-  if (inputTokens < onePartLimit) return undefined;
-  if (inputTokens < onePartLimit * 2) return 2;
-  return CHATGPT_BIGGER_CONTEXT_PARTS;
+  if (!compaction && inputTokens < onePartLimit) return undefined;
+  const counted = Math.min(
+    CHATGPT_BIGGER_CONTEXT_MAX_PARTS,
+    Math.max(
+      compaction ? CHATGPT_BIGGER_CONTEXT_PARTS : 2,
+      Math.floor(inputTokens / onePartLimit) + 1,
+    ),
+  );
+  return isChatGptWebMultipartPartCount(counted) ? counted : CHATGPT_BIGGER_CONTEXT_MAX_PARTS;
 }
 
 function roundEvidenceText(evidence: ChatGptWebRoundEvidence): string {

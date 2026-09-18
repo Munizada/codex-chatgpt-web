@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { estimateChatGptWebInputTokens, resolveBiggerContextMultipartParts } from "../src/adapters/chatgpt-web/usage";
+import { CHATGPT_BIGGER_CONTEXT_TARGET_STAGE_TOKENS, biggerContextStabilityPartCount, estimateChatGptWebInputTokens, resolveBiggerContextMultipartParts } from "../src/adapters/chatgpt-web/usage";
 import { compileChatGptWebPrompt } from "../src/adapters/chatgpt-web/prompt";
 import { compiledChatGptWebMessages, estimateChatGptWebImageTokens, estimateCompiledChatGptWebInputTokens } from "../src/adapters/chatgpt-web/input-tokens";
 import { assertChatGptWebMultipartInputWithinLimits, resolveChatGptWebMultipartStagingMode } from "../src/adapters/chatgpt-web/browser-worker";
@@ -17,6 +17,15 @@ function request(text: string): CodexParsedRequest {
   };
 }
 
+
+test("Bigger Context stability planner keeps browser stages around 40k tokens", () => {
+  expect(CHATGPT_BIGGER_CONTEXT_TARGET_STAGE_TOKENS).toBe(40_000);
+  expect(biggerContextStabilityPartCount(94_999, 95_000)).toBeUndefined();
+  expect(biggerContextStabilityPartCount(95_000, 95_000)).toBe(3);
+  expect(biggerContextStabilityPartCount(138_033, 95_000)).toBe(4);
+  expect(biggerContextStabilityPartCount(280_000, 95_000)).toBe(8);
+});
+
 test.each([
   ["highly compressible", "a".repeat(480_000)],
   ["ordinary repeated words", `${"word ".repeat(79_999)}word`],
@@ -28,7 +37,7 @@ test("multipart selection accounts for whole-record and composer fit before subm
   const plus = { ...capabilities, extraHighAvailable: false, proAvailable: false };
   for (const [contents, expected] of [
     [["small task"], undefined],
-    [[50_000, 40_000, 50_000, 5_000].map(n => "word ".repeat(n)), 3],
+    [[50_000, 40_000, 50_000, 5_000].map(n => "word ".repeat(n)), 4],
     [Array.from({ length: 3 }, () => " ".repeat(450_000)), 2],
   ] as const) {
     const parsed = request("");
