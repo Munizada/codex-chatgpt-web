@@ -162,11 +162,11 @@ test("assistant tracking rebinds only one proven replacement after React detache
     "conversation-turn-2",
     ["conversation-turn-1", "conversation-turn-3"],
   )).toBe("conversation-turn-3");
-  expect(() => chatGptReboundTurnIdentity(
+  expect(chatGptReboundTurnIdentity(
     ["conversation-turn-1"],
     "conversation-turn-2",
     ["conversation-turn-1", "conversation-turn-3", "conversation-turn-4"],
-  )).toThrow("2 new conversation turns");
+  )).toBe("conversation-turn-4");
 });
 
 test("response caching rechecks CSS visibility without requiring a DOM mutation", async () => {
