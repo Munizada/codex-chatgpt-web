@@ -40,9 +40,11 @@ import {
   CHATGPT_MAX_INPUT_IMAGES,
   formatChatGptWebMultipartCommit,
   formatChatGptWebMultipartStage,
+  isChatGptWebMultipartPartCount,
   type CompiledChatGptWebPrompt,
   type ChatGptWebPromptImage,
   type ChatGptWebMultipartStage,
+  type ChatGptWebMultipartPartCount,
 } from "./prompt";
 import { estimateCompiledChatGptWebInputTokens } from "./input-tokens";
 import {
@@ -915,7 +917,7 @@ export function assertChatGptWebMultipartInputWithinLimits(
   effort: ChatGptWebModelMode["effort"],
   capabilities: ChatGptWebCapabilities,
   maxMessageChars: number,
-  partCount: 2 | 3,
+  partCount: ChatGptWebMultipartPartCount,
   transport?: {
     stagingEffort: ChatGptWebModelMode["effort"];
     maxStageMessageTokens: number;
@@ -990,7 +992,16 @@ export function assertChatGptWebMultipartInputWithinLimits(
   }
   const experimentalContextWindow = baseContextWindow * partCount;
   if (estimatedInputTokens < experimentalContextWindow) return;
-  const partLabel = partCount === 2 ? "two-part" : "three-part";
+  const partLabels = {
+    2: "two-part",
+    3: "three-part",
+    4: "four-part",
+    5: "five-part",
+    6: "six-part",
+    7: "seven-part",
+    8: "eight-part",
+  } as const;
+  const partLabel = partLabels[partCount];
   throw new ChatGptWebAdapterError(
     `This Bigger Context transaction is estimated at ${estimatedInputTokens.toLocaleString("en-US")} input tokens, which exceeds its experimental ${experimentalContextWindow.toLocaleString("en-US")}-token ${partLabel} ceiling. Run /compact, then retry.`,
     { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
@@ -1290,7 +1301,7 @@ export function chatGptSubmissionEvidence(state: {
   generationRunning: boolean;
 }): ChatGptSubmissionEvidence | undefined {
   if (chatGptNewTurnIdentity(state.initialTurnIdentities, state.userIdentities)) return "user_turn";
-  if (chatGptNewTurnIdentity(state.initialTurnIdentities, state.responseIdentities)) return "assistant_turn";
+  if (chatGptLatestNewTurnIdentity(state.initialTurnIdentities, state.responseIdentities)) return "assistant_turn";
   if (state.generationRunning) return "generation_running";
   return undefined;
 }
@@ -1390,12 +1401,19 @@ export function chatGptNewTurnIdentity(
   initial: readonly string[],
   current: readonly string[],
 ): string | undefined {
-  const previous = new Set(initial);
-  const added = current.filter(identity => !previous.has(identity));
+  const added = newTurnIdentities(initial, current);
   if (added.length > 1) {
     throw new Error(`ChatGPT exposed ${added.length} new conversation turns for one submitted message`);
   }
   return added[0];
+}
+
+/** One submitted prompt may create transient assistant shells; the latest one owns the live reply. */
+export function chatGptLatestNewTurnIdentity(
+  initial: readonly string[],
+  current: readonly string[],
+): string | undefined {
+  return newTurnIdentities(initial, current).at(-1);
 }
 
 export function chatGptReboundTurnIdentity(
@@ -1403,8 +1421,17 @@ export function chatGptReboundTurnIdentity(
   boundIdentity: string,
   current: readonly string[],
 ): string | undefined {
-  if (current.includes(boundIdentity)) return boundIdentity;
-  return chatGptNewTurnIdentity(initial, current);
+  const latest = chatGptLatestNewTurnIdentity(initial, current);
+  if (latest) return latest;
+  return current.includes(boundIdentity) ? boundIdentity : undefined;
+}
+
+function newTurnIdentities(
+  initial: readonly string[],
+  current: readonly string[],
+): string[] {
+  const previous = new Set(initial);
+  return current.filter(identity => !previous.has(identity));
 }
 
 export class ChatGptCompletionTracker {
@@ -2783,7 +2810,7 @@ export class ChatGptBrowserWorker {
     signal?: AbortSignal,
   ): Promise<string> {
     const state = await this.submissionDomState(page, baseline.domCache, signal);
-    const identity = chatGptNewTurnIdentity(
+    const identity = chatGptLatestNewTurnIdentity(
       baseline.initialTurnIdentities,
       state.responseIdentities,
     );
@@ -2878,7 +2905,7 @@ export class ChatGptBrowserWorker {
       // acknowledging its boundary; the pre-probe snapshot can otherwise leave the broker waiting
       // despite this exact iteration having successfully observed the page.
       progress = externalProgress?.snapshot();
-      const identity = chatGptNewTurnIdentity(
+      const identity = chatGptLatestNewTurnIdentity(
         observationBaseline.initialTurnIdentities,
         state.responseIdentities,
       );
@@ -2923,7 +2950,6 @@ export class ChatGptBrowserWorker {
     const boundCount = await withChatGptBrowserObservationTimeout(
       withBrowserTurnAbort(binding.locator.count(), signal),
     );
-    if (boundCount === 1) return binding;
     if (boundCount > 1) {
       throw new Error(`ChatGPT exposed ${boundCount} DOM nodes for the bound assistant turn`);
     }
@@ -3481,21 +3507,18 @@ export class ChatGptBrowserWorker {
       }
       await throwIfChatGptSessionFailureAlert(page);
       await throwIfChatGptTerminalErrorAlert(responseTurn.locator);
-      let snapshot = await this.responseDomSnapshot(responseTurn.locator, responseDomCache);
-      if (!snapshot.responsePresent && await responseTurn.locator.count() !== 1) {
-        const rebound = await this.reconcileAssistantTurnBinding(
-          page,
-          submissionBaseline,
-          responseTurn,
-          abortSignal,
-        );
-        if (rebound.identity !== responseTurn.identity) {
-          responseTurn = rebound;
-          responseDomCache.key = undefined;
-          responseDomCache.snapshot = undefined;
-          snapshot = await this.responseDomSnapshot(responseTurn.locator, responseDomCache);
-        }
+      const rebound = await this.reconcileAssistantTurnBinding(
+        page,
+        submissionBaseline,
+        responseTurn,
+        abortSignal,
+      );
+      if (rebound.identity !== responseTurn.identity) {
+        responseTurn = rebound;
+        responseDomCache.key = undefined;
+        responseDomCache.snapshot = undefined;
       }
+      const snapshot = await this.responseDomSnapshot(responseTurn.locator, responseDomCache);
       if (snapshot.stoppedThinkingVisible) throw chatGptStoppedThinkingError();
       const externalProgressSnapshot = externalProgress?.snapshot();
       if (externalProgress
@@ -4420,6 +4443,10 @@ export class ChatGptBrowserWorker {
         )
         : requestedMode;
       if (prepared.multipart) {
+        const partCount = prepared.multipart.parts.length;
+        if (!isChatGptWebMultipartPartCount(partCount)) {
+          throw new Error("ChatGPT multipart prompt part count is invalid");
+        }
         assertChatGptWebMultipartInputWithinLimits(
           estimatedInputTokens,
           estimatedMessageTokens,
@@ -4427,7 +4454,7 @@ export class ChatGptBrowserWorker {
           requestedMode.effort,
           browserCapabilities,
           maxMessageChars,
-          prepared.multipart.parts.length,
+          partCount,
           multipartStages
             && multipartFinalPrompt
             && maxStageMessageTokens !== undefined
