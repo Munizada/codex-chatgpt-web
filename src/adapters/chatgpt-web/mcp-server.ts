@@ -44,6 +44,11 @@ const AGENT_WAIT_TRANSPORT_RULE = `ChatGPT Web transport rule: wait for exactly 
 // letting the tunnel tear down and poison its long-lived stdio transport.
 export const CHATGPT_WEB_MCP_INVOCATION_TIMEOUT_MS = 90_000;
 
+// A native exec_command must yield well before the MCP transport deadline so a long-running
+// command can return its session_id and continue through codex_write_stdin instead of retiring
+// the entire ChatGPT turn binding at 90 seconds.
+export const CHATGPT_WEB_EXEC_DEFAULT_YIELD_MS = 30_000;
+
 const ZERO_RISK_MCP_INSTRUCTIONS = [
   "For each pasted Codex Web GPT request, begin with codex_turn_start using the request_id in its request block.",
   "Use that request_id with the Codex tools needed for the task.",
@@ -203,6 +208,10 @@ function assertGatewayToolArguments(name: string, args: Record<string, unknown>)
       + " so the shared MCP channel remains available to spawned Web agents",
     );
   }
+}
+
+export function chatGptExecYieldTimeMs(requested?: number): number {
+  return requested ?? CHATGPT_WEB_EXEC_DEFAULT_YIELD_MS;
 }
 
 export function chatGptMcpInvocationTimeout(
@@ -645,7 +654,7 @@ export async function runChatGptMcpServer(options: {
         const execCommandArguments = {
           cmd,
           ...(workdir ? { workdir } : {}),
-          ...(yield_time_ms !== undefined ? { yield_time_ms } : {}),
+          yield_time_ms: chatGptExecYieldTimeMs(yield_time_ms),
           ...(max_output_tokens !== undefined ? { max_output_tokens } : {}),
           ...(tty !== undefined ? { tty } : {}),
           ...permissions,
