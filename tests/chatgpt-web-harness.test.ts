@@ -2838,6 +2838,26 @@ describe("ChatGPT outer-native harness v4", () => {
       broker.completeTool(token, rawVendorExecRequest!.callId, { content: rawVendorExecContent });
       expect((await rawVendorExec).isError).not.toBe(true);
 
+      const rawExecCommand = call("codex_tool_call", {
+        turn_token: token,
+        wire_name: "exec",
+        input: "const value = await tools.exec_command({ cmd: 'sleep 60' }); text(value);",
+      });
+      const [rawExecCommandRequest] = await broker.nextToolBatch(token);
+      const rawExecCommandCalls: GatewayProgramCall[] = [];
+      const rawExecCommandContent = await executeGatewayProgram(
+        rawExecCommandRequest!.input!,
+        ["exec_command"],
+        rawExecCommandCalls,
+        true,
+      );
+      expect(rawExecCommandCalls).toEqual([{
+        name: "exec_command",
+        input: { cmd: "sleep 60", yield_time_ms: 30_000 },
+      }]);
+      broker.completeTool(token, rawExecCommandRequest!.callId, { content: rawExecCommandContent });
+      expect((await rawExecCommand).isError).not.toBe(true);
+
       const recursiveRawExec = call("codex_tool_call", {
         turn_token: token,
         wire_name: "exec",
@@ -2906,6 +2926,26 @@ describe("ChatGPT outer-native harness v4", () => {
         type: "text",
         text: JSON.stringify({ output: "web__run", exit_code: 0 }),
       }]);
+
+      const nestedExec = call("codex_tool_call", {
+        turn_token: token,
+        wire_name: "exec_command",
+        arguments: { cmd: "sleep 60" },
+      });
+      const [nestedExecRequest] = await broker.nextToolBatch(token);
+      expect(nestedExecRequest).toMatchObject({ wireName: "exec", freeform: true });
+      const nestedExecCalls: GatewayProgramCall[] = [];
+      const nestedExecContent = await executeGatewayProgram(
+        nestedExecRequest!.input!,
+        ["exec_command"],
+        nestedExecCalls,
+      );
+      expect(nestedExecCalls).toEqual([{
+        name: "exec_command",
+        input: { cmd: "sleep 60", yield_time_ms: 30_000 },
+      }]);
+      broker.completeTool(token, nestedExecRequest!.callId, { content: nestedExecContent });
+      expect((await nestedExec).isError).not.toBe(true);
 
       const waitPromise = call("codex_tool_call", {
         turn_token: token,
@@ -2980,6 +3020,44 @@ describe("ChatGPT outer-native harness v4", () => {
       await broker.close();
     }
   }, 30_000);
+
+  test("codex_tool_call applies the exec yield guard to a directly advertised exec_command", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-direct-exec-yield-${process.pid}-${Date.now()}`);
+    const broker = TurnBroker.forSocket(socketPath);
+    const environment = extractChatGptTurnEnvironment(parsed(environmentXml));
+    environment.tools = [{
+      name: "exec_command",
+      description: "Run a command",
+      parameters: { type: "object", properties: { cmd: { type: "string" }, yield_time_ms: { type: "number" } } },
+    }];
+    const token = await broker.register(environment, 60_000);
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: ["src/cli.ts", "mcp", "--broker-socket", socketPath],
+      cwd: process.cwd(),
+      stderr: "pipe",
+    });
+    const client = new Client({ name: "direct-exec-yield-test", version: "1" });
+    try {
+      await client.connect(transport);
+      const pending = client.callTool({
+        name: "codex_tool_call",
+        arguments: { turn_token: token, wire_name: "exec_command", arguments: { cmd: "sleep 60" } },
+      });
+      const [request] = await broker.nextToolBatch(token);
+      expect(request).toMatchObject({
+        wireName: "exec_command",
+        freeform: false,
+        arguments: { cmd: "sleep 60", yield_time_ms: 30_000 },
+      });
+      broker.completeTool(token, request!.callId, toolResult({ output: "session", session_id: 42 }));
+      expect((await pending).structuredContent).toMatchObject({ session_id: 42 });
+    } finally {
+      await client.close().catch(() => {});
+      broker.revoke(token);
+      await broker.close();
+    }
+  }, 15_000);
 
   test("dedicated commands preserve native approval requests and reject unsupported permission fields", async () => {
     const socketPath = brokerTestEndpoint(`cgw-permissions-${process.pid}-${Date.now()}`);
