@@ -622,7 +622,7 @@ export async function runChatGptMcpServer(options: {
     "codex_exec",
     {
       title: "Run a native Codex command",
-      description: afterSafeStart(contract, `Invoke the command tool advertised by the current outer Codex harness. A long-running command returns its native session_id. If yield_time_ms is omitted, ChatGPT Web yields after ${CHATGPT_WEB_EXEC_DEFAULT_YIELD_MS / 1_000} seconds so the command can continue through codex_write_stdin without reaching the MCP transport deadline.`),
+      description: afterSafeStart(contract, "Invoke the command tool advertised by the current outer Codex harness. A long-running command returns its native session_id."),
       inputSchema: {
         ...turnReferenceInput(contract),
         cmd: z.string().min(1).max(100_000),
