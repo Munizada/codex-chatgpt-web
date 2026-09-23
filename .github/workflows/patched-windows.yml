@@ -2,7 +2,7 @@ name: Patched Windows Build
 
 on:
   push:
-    branches: [main]
+    branches: [main, v6.0.0-base]
     paths:
       - "src/adapters/chatgpt-web/**"
       - "tests/**"
@@ -33,7 +33,7 @@ jobs:
         run: Compress-Archive -Path launcher/build/runtime/* -DestinationPath patched-runtime-windows-amd64.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: codex-web-gpt-bigger-context-windows
+          name: codex-web-gpt-v6-patch2-1-windows
           path: |
             launcher/artifacts/*.exe
             patched-runtime-windows-amd64.zip
