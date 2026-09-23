@@ -1,0 +1,41 @@
+name: Patched Windows Build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/adapters/chatgpt-web/**"
+      - "tests/**"
+      - ".github/workflows/patched-windows.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile
+        working-directory: launcher
+      - name: Prepare AVX2-independent Windows runtime
+        shell: pwsh
+        run: ./scripts/prepare-windows-baseline-bun.ps1 -Version 1.4.0 -GitHubEnv $env:GITHUB_ENV
+      - run: bun run verify
+      - run: bun run app:package
+      - run: bun run app:smoke
+      - name: Archive patched runtime
+        shell: pwsh
+        run: Compress-Archive -Path launcher/build/runtime/* -DestinationPath patched-runtime-windows-amd64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codex-web-gpt-bigger-context-windows
+          path: |
+            launcher/artifacts/*.exe
+            patched-runtime-windows-amd64.zip
+          if-no-files-found: error
+          retention-days: 30
