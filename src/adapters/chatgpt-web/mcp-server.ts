@@ -44,10 +44,15 @@ const AGENT_WAIT_TRANSPORT_RULE = `ChatGPT Web transport rule: wait for exactly 
 // letting the tunnel tear down and poison its long-lived stdio transport.
 export const CHATGPT_WEB_MCP_INVOCATION_TIMEOUT_MS = 90_000;
 
+// exec_command can spend time in Codex approval/sandbox setup before its native yield timer starts.
+// Keep a separate ceiling below the tunnel's two-minute deadline so that pre-exec setup plus the
+// 30s native yield window can complete without the local MCP layer retiring the turn at 90s.
+export const CHATGPT_WEB_EXEC_INVOCATION_TIMEOUT_MS = 110_000;
+
 // A native exec_command must yield well before the MCP transport deadline so a long-running
-// command can return its session_id and continue through codex_write_stdin instead of retiring
-// the entire ChatGPT turn binding at 90 seconds.
+// command can return its session_id and continue through codex_write_stdin.
 export const CHATGPT_WEB_EXEC_DEFAULT_YIELD_MS = 30_000;
+export const CHATGPT_WEB_EXEC_PATCH_REVISION = "v6-p2.2";
 
 const ZERO_RISK_MCP_INSTRUCTIONS = [
   "For each pasted Codex Web GPT request, begin with codex_turn_start using the request_id in its request block.",
@@ -226,6 +231,61 @@ export function chatGptMcpInvocationTimeout(
     ? CHATGPT_WEB_MCP_INVOCATION_TIMEOUT_MS
     : Math.max(1, environment.expiresAt - now);
   return Math.min(CHATGPT_WEB_MCP_INVOCATION_TIMEOUT_MS, remaining);
+}
+
+export function chatGptMcpInvocationTimeoutForTool(
+  environment: ChatGptTurnEnvironment & { expiresAt?: number },
+  targetToolName: string,
+  now = Date.now(),
+): number {
+  const cap = targetToolName === "exec_command"
+    ? CHATGPT_WEB_EXEC_INVOCATION_TIMEOUT_MS
+    : CHATGPT_WEB_MCP_INVOCATION_TIMEOUT_MS;
+  const remaining = environment.expiresAt === undefined
+    ? cap
+    : Math.max(1, environment.expiresAt - now);
+  return Math.min(cap, remaining);
+}
+
+function chatGptInvocationTarget(
+  tool: CodexTool,
+  payload: { arguments?: Record<string, unknown>; input?: string },
+): string {
+  const outer = wireName(tool);
+  if (outer === "exec_command") return outer;
+  if (outer === "exec" && typeof payload.input === "string" && /\bexec_command\b/.test(payload.input)) {
+    return "exec_command";
+  }
+  return outer;
+}
+
+function chatGptInvocationDiagnostic(
+  tool: CodexTool,
+  payload: { arguments?: Record<string, unknown>; input?: string },
+  targetToolName: string,
+  timeoutMs: number,
+): string {
+  const outerToolName = wireName(tool);
+  const args = payload.arguments ?? {};
+  const execArgs = targetToolName === "exec_command" && outerToolName === "exec_command"
+    ? {
+      arg_keys: Object.keys(args).sort(),
+      command_chars: typeof args.cmd === "string" ? args.cmd.length : null,
+      yield_time_ms: typeof args["yield_time_ms"] === "number" ? args["yield_time_ms"] : null,
+      workdir_present: Object.hasOwn(args, "workdir"),
+      sandbox_permissions: typeof args.sandbox_permissions === "string" ? args.sandbox_permissions : null,
+      tty: typeof args.tty === "boolean" ? args.tty : null,
+    }
+    : null;
+  return JSON.stringify({
+    patch: CHATGPT_WEB_EXEC_PATCH_REVISION,
+    outer_tool: outerToolName,
+    target_tool: targetToolName,
+    via_gateway: outerToolName !== targetToolName,
+    timeout_ms: timeoutMs,
+    ...(execArgs ? { exec: execArgs } : {}),
+    ...(tool.freeform ? { gateway_input_chars: payload.input?.length ?? 0 } : {}),
+  });
 }
 
 function asMcpResult(value: BrokerToolResult) {
@@ -574,7 +634,9 @@ export async function runChatGptMcpServer(options: {
     payload: { arguments?: Record<string, unknown>; input?: string },
     signal?: AbortSignal,
   ) => {
-    const timeoutMs = chatGptMcpInvocationTimeout(bound);
+    const targetToolName = chatGptInvocationTarget(tool, payload);
+    const timeoutMs = chatGptMcpInvocationTimeoutForTool(bound, targetToolName);
+    console.error(`[chatgpt-web-mcp] invoke ${chatGptInvocationDiagnostic(tool, payload, targetToolName, timeoutMs)}`);
     try {
       const response = await callTurnBroker<BrokerToolResult>(options.brokerSocketPath, {
         method: "invoke",
