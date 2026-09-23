@@ -44,6 +44,11 @@ const AGENT_WAIT_TRANSPORT_RULE = `ChatGPT Web transport rule: wait for exactly 
 // letting the tunnel tear down and poison its long-lived stdio transport.
 export const CHATGPT_WEB_MCP_INVOCATION_TIMEOUT_MS = 90_000;
 
+// A native exec_command must yield well before the MCP transport deadline so a long-running
+// command can return its session_id and continue through codex_write_stdin instead of retiring
+// the entire ChatGPT turn binding at 90 seconds.
+export const CHATGPT_WEB_EXEC_DEFAULT_YIELD_MS = 30_000;
+
 const ZERO_RISK_MCP_INSTRUCTIONS = [
   "For each pasted Codex Web GPT request, begin with codex_turn_start using the request_id in its request block.",
   "Use that request_id with the Codex tools needed for the task.",
@@ -205,6 +210,14 @@ function assertGatewayToolArguments(name: string, args: Record<string, unknown>)
   }
 }
 
+export function chatGptTransportBoundToolArguments(
+  name: string,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  if (name !== "exec_command" || Object.hasOwn(args, "yield_time_ms")) return args;
+  return { ...args, yield_time_ms: CHATGPT_WEB_EXEC_DEFAULT_YIELD_MS };
+}
+
 export function chatGptMcpInvocationTimeout(
   environment: ChatGptTurnEnvironment & { expiresAt?: number },
   now = Date.now(),
@@ -353,7 +366,9 @@ function execGatewayProgram(
   if (gatewayName !== nestedToolName) {
     throw new Error(`Codex nested tool name is invalid: ${nestedToolName}`);
   }
-  const nestedInput = freeform ? payload.input ?? "" : payload.arguments ?? {};
+  const nestedInput = freeform
+    ? payload.input ?? ""
+    : chatGptTransportBoundToolArguments(gatewayName, payload.arguments ?? {});
   return execGatewayResultProgram([
     "if (typeof ALL_TOOLS === \"undefined\" || !Array.isArray(ALL_TOOLS)) throw new Error(\"Native nested tool registry is unavailable\");",
     `const nestedToolName = ${JSON.stringify(gatewayName)};`,
@@ -379,6 +394,8 @@ function transportBoundRawExecProgram(input: string, blockedExecName: string): s
     "  const source = tools;",
     `  const waitNames = new Set(${JSON.stringify([...GATEWAY_AGENT_WAIT_TOOL_NAMES])});`,
     `  const blockedExecName = ${JSON.stringify(blockedExecName)};`,
+    `  const execCommandName = ${JSON.stringify(gatewayNestedToolName("exec_command"))};`,
+    `  const execYieldMs = ${CHATGPT_WEB_EXEC_DEFAULT_YIELD_MS};`,
     `  const pollMs = ${CHATGPT_WEB_AGENT_WAIT_POLL_MS};`,
     "  const registryNames = new Set(Reflect.ownKeys(source));",
     "  if (typeof ALL_TOOLS !== \"undefined\" && Array.isArray(ALL_TOOLS)) {",
@@ -391,6 +408,13 @@ function transportBoundRawExecProgram(input: string, blockedExecName: string): s
     "    let exposed = value;",
     "    if (typeof value === \"function\" && name === blockedExecName) {",
     "      exposed = () => { throw new Error(\"Nested raw exec is unavailable inside ChatGPT Web exec\"); };",
+    "    } else if (typeof value === \"function\" && name === execCommandName) {",
+    "      exposed = args => {",
+    "        const normalized = args && typeof args === \"object\" && !Array.isArray(args) && !Object.hasOwn(args, \"yield_time_ms\")",
+    "          ? { ...args, yield_time_ms: execYieldMs }",
+    "          : args;",
+    "        return Reflect.apply(value, source, [normalized]);",
+    "      };",
     "    } else if (typeof value === \"function\" && typeof name === \"string\" && waitNames.has(name)) {",
     "      exposed = args => {",
     "        if (!args || typeof args !== \"object\" || Array.isArray(args) || args.timeout_ms !== pollMs) {",
@@ -642,14 +666,14 @@ export async function runChatGptMcpServer(options: {
           ...(justification !== undefined ? { justification } : {}),
           ...(prefix_rule !== undefined ? { prefix_rule } : {}),
         };
-        const execCommandArguments = {
+        const execCommandArguments = chatGptTransportBoundToolArguments("exec_command", {
           cmd,
           ...(workdir ? { workdir } : {}),
           ...(yield_time_ms !== undefined ? { yield_time_ms } : {}),
           ...(max_output_tokens !== undefined ? { max_output_tokens } : {}),
           ...(tty !== undefined ? { tty } : {}),
           ...permissions,
-        };
+        });
         const shellCommandArguments = {
           command: cmd,
           ...(workdir ? { workdir } : {}),
@@ -932,7 +956,7 @@ export async function runChatGptMcpServer(options: {
           }, extra.signal);
         }
         if (input !== undefined) throw new Error(`Function Codex tool ${wire_name} does not accept freeform input`);
-        const invocationArguments = args ?? {};
+        const invocationArguments = chatGptTransportBoundToolArguments(wire_name, args ?? {});
         assertBrowserToolArguments(tool, invocationArguments);
         return invoke(claimed.bindingId, bound, tool, { arguments: invocationArguments }, extra.signal);
       });

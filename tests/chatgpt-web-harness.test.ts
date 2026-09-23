@@ -2744,7 +2744,7 @@ describe("ChatGPT outer-native harness v4", () => {
         justification: "May the local fixture command run outside the sandbox?",
         prefix_rule: ["pwd"],
       })))).toBe(true);
-      expect(execRequests.some(request => request.input?.includes(JSON.stringify({ cmd: "git status --short", workdir: tempRoot })))).toBe(true);
+      expect(execRequests.some(request => request.input?.includes(JSON.stringify({ cmd: "git status --short", workdir: tempRoot, yield_time_ms: 30_000 })))).toBe(true);
       for (const request of execRequests) {
         expect(request.input).toContain("ALL_TOOLS");
         expect(request.input).toContain('"exec_command"');
@@ -2890,6 +2890,26 @@ describe("ChatGPT outer-native harness v4", () => {
       broker.completeTool(token, rawVendorExecRequest!.callId, { content: rawVendorExecContent });
       expect((await rawVendorExec).isError).not.toBe(true);
 
+      const rawExecCommand = call("codex_tool_call", {
+        turn_token: token,
+        wire_name: "exec",
+        input: "const value = await tools.exec_command({ cmd: 'sleep 60' }); text(value);",
+      });
+      const [rawExecCommandRequest] = await broker.nextToolBatch(token);
+      const rawExecCommandCalls: GatewayProgramCall[] = [];
+      const rawExecCommandContent = await executeGatewayProgram(
+        rawExecCommandRequest!.input!,
+        ["exec_command"],
+        rawExecCommandCalls,
+        true,
+      );
+      expect(rawExecCommandCalls).toEqual([{
+        name: "exec_command",
+        input: { cmd: "sleep 60", yield_time_ms: 30_000 },
+      }]);
+      broker.completeTool(token, rawExecCommandRequest!.callId, { content: rawExecCommandContent });
+      expect((await rawExecCommand).isError).not.toBe(true);
+
       const recursiveRawExec = call("codex_tool_call", {
         turn_token: token,
         wire_name: "exec",
@@ -2958,6 +2978,26 @@ describe("ChatGPT outer-native harness v4", () => {
         type: "text",
         text: JSON.stringify({ output: "web__run", exit_code: 0 }),
       }]);
+
+      const nestedExec = call("codex_tool_call", {
+        turn_token: token,
+        wire_name: "exec_command",
+        arguments: { cmd: "sleep 60" },
+      });
+      const [nestedExecRequest] = await broker.nextToolBatch(token);
+      expect(nestedExecRequest).toMatchObject({ wireName: "exec", freeform: true });
+      const nestedExecCalls: GatewayProgramCall[] = [];
+      const nestedExecContent = await executeGatewayProgram(
+        nestedExecRequest!.input!,
+        ["exec_command"],
+        nestedExecCalls,
+      );
+      expect(nestedExecCalls).toEqual([{
+        name: "exec_command",
+        input: { cmd: "sleep 60", yield_time_ms: 30_000 },
+      }]);
+      broker.completeTool(token, nestedExecRequest!.callId, { content: nestedExecContent });
+      expect((await nestedExec).isError).not.toBe(true);
 
       const waitPromise = call("codex_tool_call", {
         turn_token: token,
@@ -3033,6 +3073,44 @@ describe("ChatGPT outer-native harness v4", () => {
     }
   }, 30_000);
 
+  test("codex_tool_call applies the exec yield guard to a directly advertised exec_command", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-v6-direct-exec-yield-${process.pid}-${Date.now()}`);
+    const broker = TurnBroker.forSocket(socketPath);
+    const environment = extractChatGptTurnEnvironment(parsed(environmentXml));
+    environment.tools = [{
+      name: "exec_command",
+      description: "Run a command",
+      parameters: { type: "object", properties: { cmd: { type: "string" }, yield_time_ms: { type: "number" } } },
+    }];
+    const token = await broker.register(environment, 60_000);
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: ["src/cli.ts", "mcp", "--broker-socket", socketPath],
+      cwd: process.cwd(),
+      stderr: "pipe",
+    });
+    const client = new Client({ name: "v6-direct-exec-yield-test", version: "1" });
+    try {
+      await client.connect(transport);
+      const pending = client.callTool({
+        name: "codex_tool_call",
+        arguments: { turn_token: token, wire_name: "exec_command", arguments: { cmd: "sleep 60" } },
+      });
+      const [request] = await broker.nextToolBatch(token);
+      expect(request).toMatchObject({
+        wireName: "exec_command",
+        freeform: false,
+        arguments: { cmd: "sleep 60", yield_time_ms: 30_000 },
+      });
+      broker.completeTool(token, request!.callId, toolResult({ output: "session", session_id: 42 }));
+      expect((await pending).structuredContent).toMatchObject({ session_id: 42 });
+    } finally {
+      await client.close().catch(() => {});
+      broker.revoke(token);
+      await broker.close();
+    }
+  }, 15_000);
+
   test("dedicated commands preserve native approval requests and reject unsupported permission fields", async () => {
     const socketPath = brokerTestEndpoint(`cgw-permissions-${process.pid}-${Date.now()}`);
     const broker = TurnBroker.forSocket(socketPath);
@@ -3060,7 +3138,7 @@ describe("ChatGPT outer-native harness v4", () => {
         try {
           const pending = client.callTool({ name: "codex_exec", arguments: { turn_token: token, cmd: "pwd", ...permissions } });
           const [request] = await broker.nextToolBatch(token);
-          const expected = name === "exec_command" ? { cmd: "pwd", ...permissions } : { command: "pwd", ...permissions };
+          const expected = name === "exec_command" ? { cmd: "pwd", yield_time_ms: 30_000, ...permissions } : { command: "pwd", ...permissions };
           broker.completeTool(token, request!.callId, { content: [{ type: "text", text: "Native approval denied" }], isError: true });
           const response = await pending;
           expect(request).toMatchObject({ wireName: name, arguments: expected });
@@ -3081,7 +3159,7 @@ describe("ChatGPT outer-native harness v4", () => {
         for (const request of batch) broker.completeTool(token, request.callId, toolResult({ output: "fixture", exit_code: 0 }));
         await ordinary;
         expect(batch).toHaveLength(1);
-        expect(batch[0]!.arguments).toEqual({ cmd: "pwd" });
+        expect(batch[0]!.arguments).toEqual({ cmd: "pwd", yield_time_ms: 30_000 });
       } finally { broker.revoke(token); }
     } finally {
       await client.close();
@@ -3305,7 +3383,7 @@ describe("ChatGPT outer-native harness v4", () => {
       expect(execRequest?.input).toContain("ALL_TOOLS");
       expect(execRequest?.input).toContain('"exec_command"');
       expect(execRequest?.input).toContain('"shell_command"');
-      expect(execRequest?.input).toContain(JSON.stringify({ cmd: "pwd", workdir: tempRoot }));
+      expect(execRequest?.input).toContain(JSON.stringify({ cmd: "pwd", workdir: tempRoot, yield_time_ms: 30_000 }));
       broker.completeTool(token, execRequest!.callId, toolResult({ output: tempRoot, exit_code: 0 }));
       expect((await execPromise).structuredContent).toEqual({ output: tempRoot, exit_code: 0 });
     } finally {
