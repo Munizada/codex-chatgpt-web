@@ -1219,13 +1219,19 @@ export async function connectAfterClosingBrowserConnection<T>(
 }
 
 export const CHATGPT_MIN_OPERATIONAL_VIEWPORT = Object.freeze({ width: 320, height: 240 });
+export const CHATGPT_OPERATIONAL_VIEWPORT_GRACE_MS = 10_000;
+export const CHATGPT_REBIND_OPERATIONAL_VIEWPORT_GRACE_MS = 30_000;
 
-async function waitForOperationalChatGptViewport(page: Page, signal?: AbortSignal): Promise<void> {
+async function waitForOperationalChatGptViewport(
+  page: Page,
+  signal?: AbortSignal,
+  timeoutMs = CHATGPT_OPERATIONAL_VIEWPORT_GRACE_MS,
+): Promise<void> {
   try {
     await withBrowserTurnAbort(page.waitForFunction(
       ({ width, height }) => innerWidth >= width && innerHeight >= height,
       CHATGPT_MIN_OPERATIONAL_VIEWPORT,
-      { polling: 50, timeout: 10_000 },
+      { polling: 50, timeout: timeoutMs },
     ), signal);
   } catch (error) {
     if (signal?.aborted) throw new DOMException("ChatGPT browser page acquisition aborted", "AbortError");
@@ -4891,7 +4897,7 @@ export class ChatGptBrowserWorker {
                     // close exactly this transport before retrying.
                     turnConnection = rebound.browser;
                     diagnosticPage = rebound.page;
-                    await waitForOperationalChatGptViewport(rebound.page, signal);
+                    await waitForOperationalChatGptViewport(rebound.page, signal, CHATGPT_REBIND_OPERATIONAL_VIEWPORT_GRACE_MS);
                     return rebound;
                   },
                 );
