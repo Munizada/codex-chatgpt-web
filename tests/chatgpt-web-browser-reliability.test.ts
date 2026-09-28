@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import {
   CHATGPT_BROWSER_PAGE_REBIND_ACQUISITION_ATTEMPTS,
+  CHATGPT_OPERATIONAL_VIEWPORT_GRACE_MS,
+  CHATGPT_REBIND_OPERATIONAL_VIEWPORT_GRACE_MS,
   CHATGPT_COMPACTION_RESPONSE_DOM_GRACE_MS,
   CHATGPT_RESPONSE_DOM_GRACE_MS,
   ChatGptTurnDomHealthTracker,
@@ -28,4 +30,11 @@ test("compaction gets a longer missing-response grace than ordinary turns", () =
 
 test("launcher rebind retries page acquisition before killing a live turn", () => {
   expect(CHATGPT_BROWSER_PAGE_REBIND_ACQUISITION_ATTEMPTS).toBe(2);
+});
+
+test("rebind viewport recovery gets bounded extra headroom", () => {
+  expect(CHATGPT_OPERATIONAL_VIEWPORT_GRACE_MS).toBe(10_000);
+  expect(CHATGPT_REBIND_OPERATIONAL_VIEWPORT_GRACE_MS).toBe(30_000);
+  expect(CHATGPT_REBIND_OPERATIONAL_VIEWPORT_GRACE_MS).toBeGreaterThan(CHATGPT_OPERATIONAL_VIEWPORT_GRACE_MS);
+  expect(CHATGPT_REBIND_OPERATIONAL_VIEWPORT_GRACE_MS).toBeLessThan(60_000);
 });
