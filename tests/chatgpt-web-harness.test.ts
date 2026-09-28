@@ -22,7 +22,7 @@ import { MAX_CHATGPT_WEB_TURN_RETRIES } from "../src/adapters/chatgpt-web/retry-
 import { ChatGptTextFeed, ChatGptTraceFeed, ChatGptTurnSessions, chatGptCompactionSourceExecutionKey, chatGptInstructionLineage, chatGptThreadOwnershipKey, chatGptTurnExecutionKey, chatGptTurnSessions } from "../src/adapters/chatgpt-web/turn-execution";
 import { callTurnBroker, TurnBroker, type BrokerToolResult } from "../src/adapters/chatgpt-web/turn-broker";
 import { ChatGptExternalTurnProgress, ChatGptMirroredTurnProgress, chatGptExternalProgressIsLive, chatGptExternalToolCallsAreInFlight } from "../src/adapters/chatgpt-web/turn-progress";
-import { CHATGPT_WEB_MCP_INVOCATION_TIMEOUT_MS, chatGptMcpInvocationTimeout } from "../src/adapters/chatgpt-web/mcp-server";
+import { CHATGPT_WEB_EXEC_DEFAULT_YIELD_MS, CHATGPT_WEB_MCP_INVOCATION_TIMEOUT_MS, chatGptMcpInvocationTimeout } from "../src/adapters/chatgpt-web/mcp-server";
 import { defaultBrokerEndpoint } from "../src/config";
 import { estimateChatGptWebUsage } from "../src/adapters/chatgpt-web/usage";
 import { decodeCompactionSummary, SUMMARY_PREFIX } from "../src/responses/compaction";
@@ -2767,7 +2767,7 @@ describe("ChatGPT outer-native harness v4", () => {
         justification: "May the local fixture command run outside the sandbox?",
         prefix_rule: ["pwd"],
       })))).toBe(true);
-      expect(execRequests.some(request => request.input?.includes(JSON.stringify({ cmd: "git status --short", workdir: tempRoot })))).toBe(true);
+      expect(execRequests.some(request => request.input?.includes(JSON.stringify({ cmd: "git status --short", workdir: tempRoot, yield_time_ms: CHATGPT_WEB_EXEC_DEFAULT_YIELD_MS })))).toBe(true);
       for (const request of execRequests) {
         expect(request.input).toContain("ALL_TOOLS");
         expect(request.input).toContain('"exec_command"');
@@ -3083,7 +3083,7 @@ describe("ChatGPT outer-native harness v4", () => {
         try {
           const pending = client.callTool({ name: "codex_exec", arguments: { turn_token: token, cmd: "pwd", ...permissions } });
           const [request] = await broker.nextToolBatch(token);
-          const expected = name === "exec_command" ? { cmd: "pwd", ...permissions } : { command: "pwd", ...permissions };
+          const expected = name === "exec_command" ? { cmd: "pwd", yield_time_ms: CHATGPT_WEB_EXEC_DEFAULT_YIELD_MS, ...permissions } : { command: "pwd", ...permissions };
           broker.completeTool(token, request!.callId, { content: [{ type: "text", text: "Native approval denied" }], isError: true });
           const response = await pending;
           expect(request).toMatchObject({ wireName: name, arguments: expected });
@@ -3104,7 +3104,7 @@ describe("ChatGPT outer-native harness v4", () => {
         for (const request of batch) broker.completeTool(token, request.callId, toolResult({ output: "fixture", exit_code: 0 }));
         await ordinary;
         expect(batch).toHaveLength(1);
-        expect(batch[0]!.arguments).toEqual({ cmd: "pwd" });
+        expect(batch[0]!.arguments).toEqual({ cmd: "pwd", yield_time_ms: CHATGPT_WEB_EXEC_DEFAULT_YIELD_MS });
       } finally { broker.revoke(token); }
     } finally {
       await client.close();
@@ -3328,7 +3328,7 @@ describe("ChatGPT outer-native harness v4", () => {
       expect(execRequest?.input).toContain("ALL_TOOLS");
       expect(execRequest?.input).toContain('"exec_command"');
       expect(execRequest?.input).toContain('"shell_command"');
-      expect(execRequest?.input).toContain(JSON.stringify({ cmd: "pwd", workdir: tempRoot }));
+      expect(execRequest?.input).toContain(JSON.stringify({ cmd: "pwd", workdir: tempRoot, yield_time_ms: CHATGPT_WEB_EXEC_DEFAULT_YIELD_MS }));
       broker.completeTool(token, execRequest!.callId, toolResult({ output: tempRoot, exit_code: 0 }));
       expect((await execPromise).structuredContent).toEqual({ output: tempRoot, exit_code: 0 });
     } finally {
