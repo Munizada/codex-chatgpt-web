@@ -793,7 +793,7 @@ export async function runChatGptMcpServer(options: {
         ...turnReferenceInput(contract),
         session_id: z.number().int().nonnegative(),
         chars: z.string().max(1_000_000).optional(),
-        yield_time_ms: z.number().int().min(250).max(CHATGPT_WEB_WRITE_STDIN_MAX_YIELD_MS).optional(),
+        yield_time_ms: z.number().int().min(250).max(300_000).optional(),
         max_output_tokens: z.number().int().min(1).max(1_000_000).optional(),
       },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
