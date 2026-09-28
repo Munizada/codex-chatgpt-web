@@ -37,6 +37,9 @@ const builderArgs = [
   "never",
 ];
 if (target === "--mac" && !env.CSC_LINK && !env.CSC_NAME) {
+  // electron-builder skips signing on pull requests by default. With key discovery disabled and
+  // identity=- this only enables ad-hoc signing, so the package can still pass codesign verification.
+  env.CSC_FOR_PULL_REQUEST = "true";
   builderArgs.push("--config.mac.identity=-");
 }
 if (target === "--linux") {
