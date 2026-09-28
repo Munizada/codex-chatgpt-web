@@ -5371,6 +5371,53 @@ export class ChatGptBrowserWorker {
         chatGptResponseDomGraceMs(turn.compaction === true),
       );
       const responseDomCache: ChatGptResponseDomCache = {};
+      const handleRunningStall = async (action: ChatGptRunningStallAction | undefined): Promise<boolean> => {
+        if (action === undefined) return false;
+        const cause = new Error(
+          `ChatGPT remained marked as running without observable model or tool progress for ${CHATGPT_RUNNING_STALL_RECOVERY_MS / 60_000} minutes`,
+        );
+        if (action === "fail") {
+          throw new ChatGptWebAdapterError(
+            `ChatGPT remained marked as running without observable progress for ${CHATGPT_RUNNING_STALL_POST_RECOVERY_GRACE_MS / 60_000} minutes after browser recovery`,
+            {
+              status: 504,
+              errorType: "server_error",
+              code: "browser_turn_stalled",
+              retryable: false,
+              cause,
+            },
+          );
+        }
+        if (!launcherObservationRecovery) {
+          throw new ChatGptWebAdapterError(cause.message, {
+            status: 504,
+            errorType: "server_error",
+            code: "browser_turn_stalled",
+            retryable: false,
+            cause,
+          });
+        }
+        console.warn(
+          `[chatgpt-web] browser turn ${turn.traceId} has no observable progress while still running; rebinding its leased page once`,
+        );
+        await diagnostics.capture(page, "response-running-stalled");
+        await rebindLauncherPage(1, cause, turn.abortSignal);
+        submissionBaseline = {
+          ...submissionBaseline,
+          userTurns: page.locator(CHATGPT_USER_TURN_SELECTOR),
+          responseTurns: page.locator(CHATGPT_ASSISTANT_TURN_SELECTOR),
+          domCache: {},
+        };
+        responseTurn = {
+          ...responseTurn,
+          locator: page.locator(chatGptAssistantTurnSelector(responseTurn.identity)),
+        };
+        responseDomCache.key = undefined;
+        responseDomCache.snapshot = undefined;
+        runningStallTracker.markRecovered();
+        await diagnostics.capture(page, "response-running-stall-rebound");
+        return true;
+      };
       let consecutiveObservationRebinds = 0;
       let internalObservationFaults = 0;
       let observedThisIteration = false;
@@ -5510,55 +5557,10 @@ export class ChatGptBrowserWorker {
             modelProgressRevision += 1;
             emitMarkdownDelta(textDelta);
           }
-          const runningStallAction = runningStallTracker.update({
+          if (await handleRunningStall(runningStallTracker.update({
             running,
             progressRevision: modelProgressRevision + (externalProgressSnapshot?.revision ?? 0),
-          });
-          if (runningStallAction === "recover") {
-            const cause = new Error(
-              `ChatGPT remained marked as running without observable model or tool progress for ${CHATGPT_RUNNING_STALL_RECOVERY_MS / 60_000} minutes`,
-            );
-            if (!launcherObservationRecovery) {
-              throw new ChatGptWebAdapterError(cause.message, {
-                status: 504,
-                errorType: "server_error",
-                code: "browser_turn_stalled",
-                retryable: false,
-                cause,
-              });
-            }
-            console.warn(
-              `[chatgpt-web] browser turn ${turn.traceId} has no observable progress while still running; rebinding its leased page once`,
-            );
-            await diagnostics.capture(page, "response-running-stalled");
-            await rebindLauncherPage(1, cause, turn.abortSignal);
-            submissionBaseline = {
-              ...submissionBaseline,
-              userTurns: page.locator(CHATGPT_USER_TURN_SELECTOR),
-              responseTurns: page.locator(CHATGPT_ASSISTANT_TURN_SELECTOR),
-              domCache: {},
-            };
-            responseTurn = {
-              ...responseTurn,
-              locator: page.locator(chatGptAssistantTurnSelector(responseTurn.identity)),
-            };
-            responseDomCache.key = undefined;
-            responseDomCache.snapshot = undefined;
-            runningStallTracker.markRecovered();
-            await diagnostics.capture(page, "response-running-stall-rebound");
-            continue;
-          }
-          if (runningStallAction === "fail") {
-            throw new ChatGptWebAdapterError(
-              `ChatGPT remained marked as running without observable progress for ${CHATGPT_RUNNING_STALL_POST_RECOVERY_GRACE_MS / 60_000} minutes after browser recovery`,
-              {
-                status: 504,
-                errorType: "server_error",
-                code: "browser_turn_stalled",
-                retryable: false,
-              },
-            );
-          }
+          }))) continue;
           const domError = domHealthTracker.update({
             responsePresent: snapshot.responsePresent,
             running,
@@ -5637,6 +5639,10 @@ export class ChatGptBrowserWorker {
             );
           }
         } else {
+          if (await handleRunningStall(runningStallTracker.update({
+            running,
+            progressRevision: modelProgressRevision + (externalProgressSnapshot?.revision ?? 0),
+          }))) continue;
           const domError = domHealthTracker.update({
             responsePresent: false,
             running,
