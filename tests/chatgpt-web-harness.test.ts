@@ -3197,7 +3197,7 @@ describe("ChatGPT outer-native harness v4", () => {
         turn_token: token,
         session_id: 42,
         chars: "y\n",
-        yield_time_ms: 5_000,
+        yield_time_ms: 300_000,
         max_output_tokens: 2_000,
       });
       const [writeRequest] = await broker.nextToolBatch(token);
@@ -3207,7 +3207,7 @@ describe("ChatGPT outer-native harness v4", () => {
         arguments: {
           session_id: 42,
           chars: "y\n",
-          yield_time_ms: 5_000,
+          yield_time_ms: CHATGPT_WEB_WRITE_STDIN_MAX_YIELD_MS,
           max_output_tokens: 2_000,
         },
       }));
