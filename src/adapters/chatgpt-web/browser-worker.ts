@@ -140,7 +140,7 @@ export const CHATGPT_COMPLETION_ACTION_GRACE_MS = 60_000;
 // A visible Stop control alone is not proof of useful progress. If the response projection and
 // MCP activity both remain unchanged for this long, rebind once and then fail closed rather than
 // keeping the outer Codex turn alive forever through heartbeats.
-export const CHATGPT_RUNNING_STALL_GRACE_MS = 15 * 60_000;
+export const CHATGPT_RUNNING_STALL_GRACE_MS = 10 * 60_000;
 export const CHATGPT_COMPLETION_SETTLE_MS = 2_000;
 export const CHATGPT_TOOL_CONFIRMATION_TIMEOUT_MS = 60_000;
 export const MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS = 3;
@@ -1587,14 +1587,14 @@ export class ChatGptRunningStallTracker {
   update(state: {
     running: boolean;
     currentText: string;
-    currentHtml: string;
+    progressSignature: string;
     externalProgressLive: boolean;
   }, now = Date.now()): boolean {
     if (!state.running || state.externalProgressLive) {
       this.reset();
       return false;
     }
-    const signature = `${state.currentText}\0${state.currentHtml}`;
+    const signature = `${state.currentText}\0${state.progressSignature}`;
     if (this.signature !== signature) {
       this.signature = signature;
       this.since = now;
@@ -5467,7 +5467,11 @@ export class ChatGptBrowserWorker {
         const runningStalled = runningStallTracker.update({
           running,
           currentText: snapshot.visibleText,
-          currentHtml: snapshot.fullHtml,
+          progressSignature: JSON.stringify(snapshot.traceBlocks.map(block => ({
+            kind: block.kind,
+            text: block.text,
+            complete: block.complete === true,
+          }))),
           externalProgressLive,
         });
         if (runningStalled) {
