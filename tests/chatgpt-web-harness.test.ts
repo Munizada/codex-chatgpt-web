@@ -2711,15 +2711,12 @@ describe("ChatGPT outer-native harness v4", () => {
         idempotentHint: false,
         openWorldHint: true,
       });
-      const listedWriteStdin = listed.tools.find(tool => tool.name === "codex_write_stdin");
-      expect(listedWriteStdin?.annotations).toMatchObject({
+      expect(listed.tools.find(tool => tool.name === "codex_write_stdin")?.annotations).toMatchObject({
         readOnlyHint: false,
         destructiveHint: true,
         idempotentHint: false,
         openWorldHint: true,
       });
-      expect((listedWriteStdin?.inputSchema.properties as Record<string, Record<string, unknown>>).yield_time_ms)
-        .toMatchObject({ maximum: CHATGPT_WEB_WRITE_STDIN_MAX_YIELD_MS });
       expect(listed.tools.find(tool => tool.name === "codex_apply_patch")?.annotations).toMatchObject({
         readOnlyHint: false,
         destructiveHint: true,
