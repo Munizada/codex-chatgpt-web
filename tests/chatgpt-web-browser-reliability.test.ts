@@ -13,12 +13,12 @@ import {
 } from "../src/adapters/chatgpt-web/browser-worker";
 
 test("a visibly running turn must still make observable progress", () => {
-  expect(CHATGPT_RUNNING_STALL_GRACE_MS).toBe(15 * 60_000);
+  expect(CHATGPT_RUNNING_STALL_GRACE_MS).toBe(10 * 60_000);
   const tracker = new ChatGptRunningStallTracker();
   const stalled = {
     running: true,
     currentText: "working",
-    currentHtml: "<div>working</div>",
+    progressSignature: "reasoning: step 1",
     externalProgressLive: false,
   };
   expect(tracker.update(stalled, 0)).toBeFalse();
@@ -26,6 +26,7 @@ test("a visibly running turn must still make observable progress", () => {
   expect(tracker.update(stalled, CHATGPT_RUNNING_STALL_GRACE_MS)).toBeTrue();
 
   expect(tracker.update({ ...stalled, currentText: "working more" }, CHATGPT_RUNNING_STALL_GRACE_MS + 1)).toBeFalse();
+  expect(tracker.update({ ...stalled, progressSignature: "reasoning: step 2" }, CHATGPT_RUNNING_STALL_GRACE_MS + 2)).toBeFalse();
   expect(tracker.update({ ...stalled, externalProgressLive: true }, CHATGPT_RUNNING_STALL_GRACE_MS * 2)).toBeFalse();
   expect(tracker.update(stalled, CHATGPT_RUNNING_STALL_GRACE_MS * 3)).toBeFalse();
   expect(tracker.update({ ...stalled, running: false }, CHATGPT_RUNNING_STALL_GRACE_MS * 4)).toBeFalse();
