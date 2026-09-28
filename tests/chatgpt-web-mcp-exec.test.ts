@@ -4,6 +4,7 @@ import {
   CHATGPT_WEB_LONG_TOOL_INVOCATION_TIMEOUT_MS,
   CHATGPT_WEB_MCP_INVOCATION_TIMEOUT_MS,
   CHATGPT_WEB_RELIABILITY_PATCH_REVISION,
+  CHATGPT_WEB_WRITE_STDIN_MAX_YIELD_MS,
   chatGptLongRunningToolName,
   chatGptMcpInvocationTimeoutForTool,
   chatGptTransportBoundToolArguments,
@@ -22,6 +23,26 @@ test("exec_command preserves an explicit yield interval", () => {
   expect(chatGptTransportBoundToolArguments("exec_command", explicit)).toBe(explicit);
 });
 
+test("write_stdin polling is capped below the MCP deadline across direct and namespaced routes", () => {
+  expect(CHATGPT_WEB_WRITE_STDIN_MAX_YIELD_MS).toBe(90_000);
+  expect(chatGptTransportBoundToolArguments("write_stdin", {
+    session_id: 42,
+    yield_time_ms: 300_000,
+  })).toEqual({
+    session_id: 42,
+    yield_time_ms: CHATGPT_WEB_WRITE_STDIN_MAX_YIELD_MS,
+  });
+  expect(chatGptTransportBoundToolArguments("mcp__codexLocalOps__write_stdin", {
+    session_id: 42,
+    yield_time_ms: 120_000,
+  })).toEqual({
+    session_id: 42,
+    yield_time_ms: CHATGPT_WEB_WRITE_STDIN_MAX_YIELD_MS,
+  });
+  const safe = { session_id: 42, yield_time_ms: 30_000 };
+  expect(chatGptTransportBoundToolArguments("write_stdin", safe)).toBe(safe);
+});
+
 test("transport yield guard leaves unrelated tool arguments untouched", () => {
   const unrelated = { timeout_ms: 30_000 };
   expect(chatGptTransportBoundToolArguments("collaboration__wait_agent", unrelated)).toBe(unrelated);
@@ -29,7 +50,7 @@ test("transport yield guard leaves unrelated tool arguments untouched", () => {
 
 test("long command-like MCP tools get bounded headroom below the two-minute tunnel", () => {
   const environment = {} as Parameters<typeof chatGptMcpInvocationTimeoutForTool>[0];
-  expect(CHATGPT_WEB_RELIABILITY_PATCH_REVISION).toBe("v6.1.3-r2");
+  expect(CHATGPT_WEB_RELIABILITY_PATCH_REVISION).toBe("v6.1.3-r3");
   expect(CHATGPT_WEB_LONG_TOOL_INVOCATION_TIMEOUT_MS).toBe(110_000);
   expect(CHATGPT_WEB_LONG_TOOL_INVOCATION_TIMEOUT_MS).toBeGreaterThan(CHATGPT_WEB_MCP_INVOCATION_TIMEOUT_MS);
   expect(CHATGPT_WEB_LONG_TOOL_INVOCATION_TIMEOUT_MS).toBeLessThan(120_000);
