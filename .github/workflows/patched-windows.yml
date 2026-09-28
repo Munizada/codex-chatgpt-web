@@ -8,7 +8,11 @@ on:
       - fix/v6.1.3-reliability
     paths:
       - "src/adapters/chatgpt-web/**"
+      - "launcher/**"
+      - "scripts/**"
       - "tests/**"
+      - "package.json"
+      - "bun.lock"
       - ".github/workflows/patched-windows.yml"
   pull_request:
     branches: [main]
