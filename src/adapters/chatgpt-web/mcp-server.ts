@@ -479,7 +479,7 @@ function transportBoundRawExecProgram(input: string, blockedExecName: string): s
     "        }",
     "        return Reflect.apply(value, source, [args]);",
     "      };",
-    "    } else if (typeof value === \"function\") {
+    "    } else if (typeof value === \"function\") {",
     "      exposed = (...args) => Reflect.apply(value, source, args);",
     "    }",
     "    wrappers.set(name, exposed);",
