@@ -44,15 +44,28 @@ const AGENT_WAIT_TRANSPORT_RULE = `ChatGPT Web transport rule: wait for exactly 
 // letting the tunnel tear down and poison its long-lived stdio transport.
 export const CHATGPT_WEB_MCP_INVOCATION_TIMEOUT_MS = 90_000;
 
-// exec_command can spend time in Codex approval/sandbox setup before its native yield timer starts.
-// Keep a separate ceiling below the tunnel's two-minute deadline so that pre-exec setup plus the
-// 30s native yield window can complete without the local MCP layer retiring the turn at 90s.
-export const CHATGPT_WEB_EXEC_INVOCATION_TIMEOUT_MS = 110_000;
+// Command-like tools may spend substantial time in sandbox/approval setup before they can yield.
+// Keep a bounded headroom below the tunnel's two-minute deadline without extending every MCP call.
+export const CHATGPT_WEB_LONG_TOOL_INVOCATION_TIMEOUT_MS = 110_000;
 
-// A native exec_command must yield well before the MCP transport deadline so a long-running
-// command can return its session_id and continue through codex_write_stdin.
+// exec_command must yield before the MCP/tunnel boundary so long-running work can continue through
+// write_stdin instead of keeping a single MCP request open until the bridge retires the turn.
 export const CHATGPT_WEB_EXEC_DEFAULT_YIELD_MS = 30_000;
-export const CHATGPT_WEB_EXEC_PATCH_REVISION = "v6-p2.2";
+export const CHATGPT_WEB_RELIABILITY_PATCH_REVISION = "v6.1.3-r1";
+
+const LONG_RUNNING_TOOL_SUFFIXES = [
+  "exec",
+  "exec_command",
+  "shell_command",
+  "write_stdin",
+  "local_shell_run",
+] as const;
+
+export function chatGptLongRunningToolName(name: string): boolean {
+  return LONG_RUNNING_TOOL_SUFFIXES.some(suffix => (
+    name === suffix || name.endsWith(`__${suffix}`)
+  ));
+}
 
 const ZERO_RISK_MCP_INSTRUCTIONS = [
   "For each pasted Codex Web GPT request, begin with codex_turn_start using the request_id in its request block.",
@@ -238,25 +251,13 @@ export function chatGptMcpInvocationTimeoutForTool(
   targetToolName: string,
   now = Date.now(),
 ): number {
-  const cap = targetToolName === "exec_command"
-    ? CHATGPT_WEB_EXEC_INVOCATION_TIMEOUT_MS
+  const cap = chatGptLongRunningToolName(targetToolName)
+    ? CHATGPT_WEB_LONG_TOOL_INVOCATION_TIMEOUT_MS
     : CHATGPT_WEB_MCP_INVOCATION_TIMEOUT_MS;
   const remaining = environment.expiresAt === undefined
     ? cap
     : Math.max(1, environment.expiresAt - now);
   return Math.min(cap, remaining);
-}
-
-function chatGptInvocationTarget(
-  tool: CodexTool,
-  payload: { arguments?: Record<string, unknown>; input?: string },
-): string {
-  const outer = wireName(tool);
-  if (outer === "exec_command") return outer;
-  if (outer === "exec" && typeof payload.input === "string" && /\bexec_command\b/.test(payload.input)) {
-    return "exec_command";
-  }
-  return outer;
 }
 
 function chatGptInvocationDiagnostic(
@@ -271,14 +272,14 @@ function chatGptInvocationDiagnostic(
     ? {
       arg_keys: Object.keys(args).sort(),
       command_chars: typeof args.cmd === "string" ? args.cmd.length : null,
-      yield_time_ms: typeof args["yield_time_ms"] === "number" ? args["yield_time_ms"] : null,
+      yield_time_ms: typeof args.yield_time_ms === "number" ? args.yield_time_ms : null,
       workdir_present: Object.hasOwn(args, "workdir"),
       sandbox_permissions: typeof args.sandbox_permissions === "string" ? args.sandbox_permissions : null,
       tty: typeof args.tty === "boolean" ? args.tty : null,
     }
     : null;
   return JSON.stringify({
-    patch: CHATGPT_WEB_EXEC_PATCH_REVISION,
+    patch: CHATGPT_WEB_RELIABILITY_PATCH_REVISION,
     outer_tool: outerToolName,
     target_tool: targetToolName,
     via_gateway: outerToolName !== targetToolName,
@@ -426,9 +427,7 @@ function execGatewayProgram(
   if (gatewayName !== nestedToolName) {
     throw new Error(`Codex nested tool name is invalid: ${nestedToolName}`);
   }
-  const nestedInput = freeform
-    ? payload.input ?? ""
-    : chatGptTransportBoundToolArguments(gatewayName, payload.arguments ?? {});
+  const nestedInput = freeform ? payload.input ?? "" : payload.arguments ?? {};
   return execGatewayResultProgram([
     "if (typeof ALL_TOOLS === \"undefined\" || !Array.isArray(ALL_TOOLS)) throw new Error(\"Native nested tool registry is unavailable\");",
     `const nestedToolName = ${JSON.stringify(gatewayName)};`,
@@ -454,9 +453,8 @@ function transportBoundRawExecProgram(input: string, blockedExecName: string): s
     "  const source = tools;",
     `  const waitNames = new Set(${JSON.stringify([...GATEWAY_AGENT_WAIT_TOOL_NAMES])});`,
     `  const blockedExecName = ${JSON.stringify(blockedExecName)};`,
-    `  const execCommandName = ${JSON.stringify(gatewayNestedToolName("exec_command"))};`,
-    `  const execYieldMs = ${CHATGPT_WEB_EXEC_DEFAULT_YIELD_MS};`,
     `  const pollMs = ${CHATGPT_WEB_AGENT_WAIT_POLL_MS};`,
+    `  const execYieldMs = ${CHATGPT_WEB_EXEC_DEFAULT_YIELD_MS};`,
     "  const registryNames = new Set(Reflect.ownKeys(source));",
     "  if (typeof ALL_TOOLS !== \"undefined\" && Array.isArray(ALL_TOOLS)) {",
     "    for (const tool of ALL_TOOLS) if (typeof tool?.name === \"string\") registryNames.add(tool.name);",
@@ -468,12 +466,11 @@ function transportBoundRawExecProgram(input: string, blockedExecName: string): s
     "    let exposed = value;",
     "    if (typeof value === \"function\" && name === blockedExecName) {",
     "      exposed = () => { throw new Error(\"Nested raw exec is unavailable inside ChatGPT Web exec\"); };",
-    "    } else if (typeof value === \"function\" && name === execCommandName) {",
+    "    } else if (typeof value === \"function\" && name === \"exec_command\") {",
     "      exposed = args => {",
-    "        const normalized = args && typeof args === \"object\" && !Array.isArray(args) && !Object.hasOwn(args, \"yield_time_ms\")",
-    "          ? { ...args, yield_time_ms: execYieldMs }",
-    "          : args;",
-    "        return Reflect.apply(value, source, [normalized]);",
+    "        const normalized = args && typeof args === \"object\" && !Array.isArray(args) ? args : {};",
+    "        const guarded = Object.prototype.hasOwnProperty.call(normalized, \"yield_time_ms\") ? normalized : { ...normalized, yield_time_ms: execYieldMs };",
+    "        return Reflect.apply(value, source, [guarded]);",
     "      };",
     "    } else if (typeof value === \"function\" && typeof name === \"string\" && waitNames.has(name)) {",
     "      exposed = args => {",
@@ -482,7 +479,7 @@ function transportBoundRawExecProgram(input: string, blockedExecName: string): s
     "        }",
     "        return Reflect.apply(value, source, [args]);",
     "      };",
-    "    } else if (typeof value === \"function\") {",
+    "    } else if (typeof value === \"function\") {
     "      exposed = (...args) => Reflect.apply(value, source, args);",
     "    }",
     "    wrappers.set(name, exposed);",
@@ -557,7 +554,8 @@ export async function runChatGptMcpServer(options: {
       } catch (cleanupError) {
         throw new AggregateError(
           [error, cleanupError],
-          "Codex Native claim failed and its broker activity could not be retired",
+          `Codex Native claim failed: ${error instanceof Error ? error.message : String(error)}. Its broker activity could not be retired.`,
+          { cause: error },
         );
       }
       throw error;
@@ -633,8 +631,8 @@ export async function runChatGptMcpServer(options: {
     tool: CodexTool,
     payload: { arguments?: Record<string, unknown>; input?: string },
     signal?: AbortSignal,
+    targetToolName = wireName(tool),
   ) => {
-    const targetToolName = chatGptInvocationTarget(tool, payload);
     const timeoutMs = chatGptMcpInvocationTimeoutForTool(bound, targetToolName);
     console.error(`[chatgpt-web-mcp] invoke ${chatGptInvocationDiagnostic(tool, payload, targetToolName, timeoutMs)}`);
     try {
@@ -690,9 +688,12 @@ export async function runChatGptMcpServer(options: {
     if (!gateway) {
       throw new Error(`This Codex turn did not advertise ${nestedToolName} or the native exec gateway`);
     }
+    const guardedPayload = freeform
+      ? payload
+      : { arguments: chatGptTransportBoundToolArguments(nestedToolName, payload.arguments ?? {}) };
     return invoke(bindingId, bound, gateway, {
-      input: execGatewayProgram(nestedToolName, freeform, payload, bound.tools.map(wireName)),
-    }, signal);
+      input: execGatewayProgram(nestedToolName, freeform, guardedPayload, bound.tools.map(wireName)),
+    }, signal, nestedToolName);
   };
 
   server.registerTool(
@@ -760,7 +761,7 @@ export async function runChatGptMcpServer(options: {
         }
         return invoke(claimed.bindingId, bound, gateway, {
           input: execCommandGatewayProgram(execCommandArguments, shellCommandArguments),
-        }, extra.signal);
+        }, extra.signal, "exec_command");
       },
     ),
   );
@@ -954,7 +955,13 @@ export async function runChatGptMcpServer(options: {
     "codex_tool_call",
     {
       title: "Call any tool from the current Codex harness",
-      description: afterSafeStart(contract, "Invoke an exact wire_name returned by codex_tool_inventory. The outer Codex runtime performs the call, approvals, and UI lifecycle."),
+      description: afterSafeStart(contract, [
+        "Invoke an exact wire_name returned by codex_tool_inventory. The outer Codex runtime performs the call, approvals, and UI lifecycle.",
+        ...(contract === "native" ? [
+          `A pending context-compaction request can also provide the reserved ${CODEX_COMPACTION_CONTROL_WIRE_NAME} operation, which is not listed by inventory.`,
+          "Use only that request's issued control token and arguments {handoff_id, summary}. This operation submits the conversation summary to the pending Codex task; it does not execute commands, access files, or invoke other tools.",
+        ] : []),
+      ].join(" ")),
       inputSchema: {
         ...turnReferenceInput(contract),
         wire_name: z.string().min(1).max(1_000),
@@ -1002,25 +1009,25 @@ export async function runChatGptMcpServer(options: {
           if (isGatewayAgentWaitTool(wire_name) && input !== undefined) {
             throw new Error(`ChatGPT Web wait_agent requires structured arguments and timeout_ms=${CHATGPT_WEB_AGENT_WAIT_POLL_MS}`);
           }
-          const invocationArguments = args ?? {};
+          const invocationArguments = chatGptTransportBoundToolArguments(wire_name, args ?? {});
           assertGatewayToolArguments(wire_name, invocationArguments);
           return invoke(claimed.bindingId, bound, gateway, {
             input: execGatewayProgram(wire_name, input !== undefined, {
               ...(input !== undefined ? { input } : { arguments: invocationArguments }),
             }, bound.tools.map(wireName)),
-          }, extra.signal);
+          }, extra.signal, wire_name);
         }
         if (tool.freeform) {
           if (input === undefined) throw new Error(`Freeform Codex tool ${wire_name} requires input`);
           if (args && Object.keys(args).length > 0) throw new Error(`Freeform Codex tool ${wire_name} does not accept arguments`);
           return invoke(claimed.bindingId, bound, tool, {
             input: tool === execGateway(bound) ? transportBoundRawExecProgram(input, wireName(tool)) : input,
-          }, extra.signal);
+          }, extra.signal, wire_name);
         }
         if (input !== undefined) throw new Error(`Function Codex tool ${wire_name} does not accept freeform input`);
         const invocationArguments = chatGptTransportBoundToolArguments(wire_name, args ?? {});
         assertBrowserToolArguments(tool, invocationArguments);
-        return invoke(claimed.bindingId, bound, tool, { arguments: invocationArguments }, extra.signal);
+        return invoke(claimed.bindingId, bound, tool, { arguments: invocationArguments }, extra.signal, wire_name);
       });
     },
   );
