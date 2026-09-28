@@ -22,7 +22,7 @@ import { MAX_CHATGPT_WEB_TURN_RETRIES } from "../src/adapters/chatgpt-web/retry-
 import { ChatGptTextFeed, ChatGptTraceFeed, ChatGptTurnSessions, chatGptCompactionSourceExecutionKey, chatGptInstructionLineage, chatGptThreadOwnershipKey, chatGptTurnExecutionKey, chatGptTurnSessions } from "../src/adapters/chatgpt-web/turn-execution";
 import { callTurnBroker, TurnBroker, type BrokerToolResult } from "../src/adapters/chatgpt-web/turn-broker";
 import { ChatGptExternalTurnProgress, ChatGptMirroredTurnProgress, chatGptExternalProgressIsLive, chatGptExternalToolCallsAreInFlight } from "../src/adapters/chatgpt-web/turn-progress";
-import { CHATGPT_WEB_EXEC_DEFAULT_YIELD_MS, CHATGPT_WEB_MCP_INVOCATION_TIMEOUT_MS, CHATGPT_WEB_WRITE_STDIN_MAX_YIELD_MS, chatGptMcpInvocationTimeout } from "../src/adapters/chatgpt-web/mcp-server";
+import { CHATGPT_WEB_EXEC_DEFAULT_YIELD_MS, CHATGPT_WEB_EXEC_MAX_YIELD_MS, CHATGPT_WEB_MCP_INVOCATION_TIMEOUT_MS, CHATGPT_WEB_WRITE_STDIN_MAX_YIELD_MS, chatGptMcpInvocationTimeout } from "../src/adapters/chatgpt-web/mcp-server";
 import { defaultBrokerEndpoint } from "../src/config";
 import { estimateChatGptWebUsage } from "../src/adapters/chatgpt-web/usage";
 import { decodeCompactionSummary, SUMMARY_PREFIX } from "../src/responses/compaction";
@@ -2981,6 +2981,26 @@ describe("ChatGPT outer-native harness v4", () => {
         type: "text",
         text: JSON.stringify({ output: "web__run", exit_code: 0 }),
       }]);
+
+      const rawExec = call("codex_tool_call", {
+        turn_token: token,
+        wire_name: "exec",
+        input: "await tools.exec_command({ cmd: \"pwd\", yield_time_ms: 300000 });",
+      });
+      const [rawExecRequest] = await broker.nextToolBatch(token);
+      expect(rawExecRequest).toMatchObject({ wireName: "exec", freeform: true });
+      const rawExecCalls: GatewayProgramCall[] = [];
+      const rawExecContent = await executeGatewayProgram(
+        rawExecRequest!.input!,
+        ["exec_command"],
+        rawExecCalls,
+      );
+      expect(rawExecCalls).toEqual([{
+        name: "exec_command",
+        input: { cmd: "pwd", yield_time_ms: CHATGPT_WEB_EXEC_MAX_YIELD_MS },
+      }]);
+      broker.completeTool(token, rawExecRequest!.callId, { content: rawExecContent });
+      expect((await rawExec).isError).not.toBeTrue();
 
       const rawWriteStdin = call("codex_tool_call", {
         turn_token: token,
