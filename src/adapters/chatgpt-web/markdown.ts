@@ -304,7 +304,7 @@ export class ChatGptMarkdownBuffer {
         }
         previousSourceStart = segment.sourceStart;
       }
-      const committedIndex = this.committedIndex(segment);
+      const committedIndex = this.committedIndex(segment, highestCommittedIndex);
       if (committedIndex !== undefined) {
         const committed = this.committed[committedIndex]!;
         if (sawPending || committedIndex < highestCommittedIndex || committed.text !== segment.text) {
@@ -345,7 +345,10 @@ export class ChatGptMarkdownBuffer {
     return pending;
   }
 
-  private committedIndex(segment: ChatGptMarkdownSegment): number | undefined {
+  private committedIndex(
+    segment: ChatGptMarkdownSegment,
+    afterIndex = -1,
+  ): number | undefined {
     const exact = this.committed.findIndex(committed => (
       segment.sourceStart !== undefined && committed.sourceStart !== undefined
         ? segment.sourceStart === committed.sourceStart && segment.tag === committed.tag
@@ -359,10 +362,17 @@ export class ChatGptMarkdownBuffer {
     // Their exact DOM keys/ranges above remain valid, but a new empty block must
     // not be mistaken for an earlier committed one by the text-only match.
     if (!segment.text.trim()) return undefined;
-    const semanticMatches = this.committed
+    // Text is only a fallback identity for DOM blocks that were re-keyed. Match the next
+    // still-unconsumed committed occurrence in response order instead of globally. Otherwise a
+    // later paragraph whose text is identical to an earlier committed paragraph aliases that
+    // earlier block and is falsely reported as a reorder/edit (#723).
+    return this.committed
       .map((committed, index) => ({ committed, index }))
-      .filter(({ committed }) => committed.tag === segment.tag && committed.text === segment.text);
-    return semanticMatches.length === 1 ? semanticMatches[0]!.index : undefined;
+      .find(({ committed, index }) => (
+        index > afterIndex
+        && committed.tag === segment.tag
+        && committed.text === segment.text
+      ))?.index;
   }
 
   private matchesLatestPending(segment: ChatGptMarkdownSegment): boolean {
