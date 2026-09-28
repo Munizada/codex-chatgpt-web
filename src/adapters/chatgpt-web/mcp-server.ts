@@ -51,7 +51,7 @@ export const CHATGPT_WEB_LONG_TOOL_INVOCATION_TIMEOUT_MS = 110_000;
 // exec_command must yield before the MCP/tunnel boundary so long-running work can continue through
 // write_stdin instead of keeping a single MCP request open until the bridge retires the turn.
 export const CHATGPT_WEB_EXEC_DEFAULT_YIELD_MS = 30_000;
-export const CHATGPT_WEB_RELIABILITY_PATCH_REVISION = "v6.1.3-r1";
+export const CHATGPT_WEB_RELIABILITY_PATCH_REVISION = "v6.1.3-r2";
 
 const LONG_RUNNING_TOOL_SUFFIXES = [
   "exec",
