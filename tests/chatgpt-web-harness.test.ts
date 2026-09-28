@@ -22,7 +22,7 @@ import { MAX_CHATGPT_WEB_TURN_RETRIES } from "../src/adapters/chatgpt-web/retry-
 import { ChatGptTextFeed, ChatGptTraceFeed, ChatGptTurnSessions, chatGptCompactionSourceExecutionKey, chatGptInstructionLineage, chatGptThreadOwnershipKey, chatGptTurnExecutionKey, chatGptTurnSessions } from "../src/adapters/chatgpt-web/turn-execution";
 import { callTurnBroker, TurnBroker, type BrokerToolResult } from "../src/adapters/chatgpt-web/turn-broker";
 import { ChatGptExternalTurnProgress, ChatGptMirroredTurnProgress, chatGptExternalProgressIsLive, chatGptExternalToolCallsAreInFlight } from "../src/adapters/chatgpt-web/turn-progress";
-import { CHATGPT_WEB_EXEC_DEFAULT_YIELD_MS, CHATGPT_WEB_MCP_INVOCATION_TIMEOUT_MS, chatGptMcpInvocationTimeout } from "../src/adapters/chatgpt-web/mcp-server";
+import { CHATGPT_WEB_EXEC_DEFAULT_YIELD_MS, CHATGPT_WEB_MCP_INVOCATION_TIMEOUT_MS, CHATGPT_WEB_WRITE_STDIN_MAX_YIELD_MS, chatGptMcpInvocationTimeout } from "../src/adapters/chatgpt-web/mcp-server";
 import { defaultBrokerEndpoint } from "../src/config";
 import { estimateChatGptWebUsage } from "../src/adapters/chatgpt-web/usage";
 import { decodeCompactionSummary, SUMMARY_PREFIX } from "../src/responses/compaction";
@@ -2711,12 +2711,15 @@ describe("ChatGPT outer-native harness v4", () => {
         idempotentHint: false,
         openWorldHint: true,
       });
-      expect(listed.tools.find(tool => tool.name === "codex_write_stdin")?.annotations).toMatchObject({
+      const listedWriteStdin = listed.tools.find(tool => tool.name === "codex_write_stdin");
+      expect(listedWriteStdin?.annotations).toMatchObject({
         readOnlyHint: false,
         destructiveHint: true,
         idempotentHint: false,
         openWorldHint: true,
       });
+      expect((listedWriteStdin?.inputSchema.properties as Record<string, Record<string, unknown>>).yield_time_ms)
+        .toMatchObject({ maximum: CHATGPT_WEB_WRITE_STDIN_MAX_YIELD_MS });
       expect(listed.tools.find(tool => tool.name === "codex_apply_patch")?.annotations).toMatchObject({
         readOnlyHint: false,
         destructiveHint: true,
@@ -2981,6 +2984,26 @@ describe("ChatGPT outer-native harness v4", () => {
         type: "text",
         text: JSON.stringify({ output: "web__run", exit_code: 0 }),
       }]);
+
+      const rawWriteStdin = call("codex_tool_call", {
+        turn_token: token,
+        wire_name: "exec",
+        input: "await tools.write_stdin({ session_id: 42, yield_time_ms: 300000 });",
+      });
+      const [rawWriteStdinRequest] = await broker.nextToolBatch(token);
+      expect(rawWriteStdinRequest).toMatchObject({ wireName: "exec", freeform: true });
+      const rawWriteStdinCalls: GatewayProgramCall[] = [];
+      const rawWriteStdinContent = await executeGatewayProgram(
+        rawWriteStdinRequest!.input!,
+        ["write_stdin"],
+        rawWriteStdinCalls,
+      );
+      expect(rawWriteStdinCalls).toEqual([{
+        name: "write_stdin",
+        input: { session_id: 42, yield_time_ms: CHATGPT_WEB_WRITE_STDIN_MAX_YIELD_MS },
+      }]);
+      broker.completeTool(token, rawWriteStdinRequest!.callId, { content: rawWriteStdinContent });
+      expect((await rawWriteStdin).isError).not.toBeTrue();
 
       const waitPromise = call("codex_tool_call", {
         turn_token: token,
