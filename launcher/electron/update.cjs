@@ -6,7 +6,7 @@ const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const { pipeline } = require("node:stream/promises");
 
-const REPOSITORY = "miuuyy/codex-chatgpt-web";
+const REPOSITORY = "Munizada/codex-chatgpt-web";
 const RELEASE_API_URL = `https://api.github.com/repos/${REPOSITORY}/releases/latest`;
 const USER_AGENT = "codex-web-gpt-launcher-updater";
 const MAX_REDIRECTS = 5;
@@ -213,7 +213,15 @@ function buildJob({ version, platform, executablePath, assetPath, stagingRoot, t
 
 function defaultDependencies() {
   return {
-    fetchRelease: async () => JSON.parse(await downloadText(RELEASE_API_URL)),
+    fetchRelease: async () => {
+      try {
+        return JSON.parse(await downloadText(RELEASE_API_URL));
+      } catch (error) {
+        // A fork may intentionally have no published patched release yet.
+        if (error instanceof Error && error.message === "Update download failed with HTTP 404") return null;
+        throw error;
+      }
+    },
     downloadText,
     downloadFile,
     sha256,
@@ -281,6 +289,10 @@ function createUpdateController({
     transition({ status: "checking" });
     try {
       const release = await deps.fetchRelease();
+      if (!release) {
+        candidate = null;
+        return transition({ status: "up-to-date" });
+      }
       // GitHub's /releases/latest already excludes these, including for older launchers.
       if (release?.draft === true || release?.prerelease === true) {
         candidate = null;
