@@ -137,6 +137,10 @@ export function chatGptResponseDomGraceMs(compaction: boolean): number {
 
 export const CHATGPT_EMPTY_RESPONSE_GRACE_MS = 10_000;
 export const CHATGPT_COMPLETION_ACTION_GRACE_MS = 60_000;
+// A visible Stop control alone is not proof of useful progress. If the response projection and
+// MCP activity both remain unchanged for this long, rebind once and then fail closed rather than
+// keeping the outer Codex turn alive forever through heartbeats.
+export const CHATGPT_RUNNING_STALL_GRACE_MS = 15 * 60_000;
 export const CHATGPT_COMPLETION_SETTLE_MS = 2_000;
 export const CHATGPT_TOOL_CONFIRMATION_TIMEOUT_MS = 60_000;
 export const MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS = 3;
@@ -1568,6 +1572,36 @@ export class ChatGptCompletionTracker {
       return false;
     }
     return now - this.candidate.since >= this.stableMs;
+  }
+}
+
+export class ChatGptRunningStallTracker {
+  private signature?: string;
+  private since?: number;
+
+  reset(): void {
+    this.signature = undefined;
+    this.since = undefined;
+  }
+
+  update(state: {
+    running: boolean;
+    currentText: string;
+    currentHtml: string;
+    externalProgressLive: boolean;
+  }, now = Date.now()): boolean {
+    if (!state.running || state.externalProgressLive) {
+      this.reset();
+      return false;
+    }
+    const signature = `${state.currentText}\0${state.currentHtml}`;
+    if (this.signature !== signature) {
+      this.signature = signature;
+      this.since = now;
+      return false;
+    }
+    this.since ??= now;
+    return now - this.since >= CHATGPT_RUNNING_STALL_GRACE_MS;
   }
 }
 
@@ -5310,6 +5344,8 @@ export class ChatGptBrowserWorker {
       const domHealthTracker = new ChatGptTurnDomHealthTracker(
         chatGptResponseDomGraceMs(turn.compaction === true),
       );
+      const runningStallTracker = new ChatGptRunningStallTracker();
+      let runningStallRecoveries = 0;
       const responseDomCache: ChatGptResponseDomCache = {};
       let consecutiveObservationRebinds = 0;
       let internalObservationFaults = 0;
@@ -5428,6 +5464,41 @@ export class ChatGptBrowserWorker {
         const stop = page.locator(CHATGPT_STOP_BUTTON_SELECTOR).last();
         const running = await stop.isVisible().catch(() => false);
         if (running) sawRunning = true;
+        const runningStalled = runningStallTracker.update({
+          running,
+          currentText: snapshot.visibleText,
+          currentHtml: snapshot.fullHtml,
+          externalProgressLive,
+        });
+        if (runningStalled) {
+          if (launcherSurfaceId && runningStallRecoveries === 0) {
+            runningStallRecoveries += 1;
+            console.warn(
+              `[chatgpt-web] browser turn ${turn.traceId} remained visibly generating without observable progress for ${CHATGPT_RUNNING_STALL_GRACE_MS}ms; rebinding once before failing`,
+            );
+            await rebindLauncherPage(MAX_CHATGPT_BROWSER_PAGE_REBINDS + 1, new Error(
+              "ChatGPT remained visibly generating without observable progress",
+            ), turn.abortSignal);
+            submissionBaseline = {
+              ...submissionBaseline,
+              userTurns: page.locator(CHATGPT_USER_TURN_SELECTOR),
+              responseTurns: page.locator(CHATGPT_ASSISTANT_TURN_SELECTOR),
+              domCache: {},
+            };
+            responseTurn = {
+              ...responseTurn,
+              locator: page.locator(chatGptAssistantTurnSelector(responseTurn.identity)),
+            };
+            responseDomCache.key = undefined;
+            responseDomCache.snapshot = undefined;
+            runningStallTracker.reset();
+            await diagnostics.capture(page, "running-stall-rebound");
+            continue;
+          }
+          throw new Error(
+            `ChatGPT remained visibly generating without observable progress for ${CHATGPT_RUNNING_STALL_GRACE_MS}ms`,
+          );
+        }
         if (snapshot.responsePresent) {
           if (!capturedResponse) {
             capturedResponse = true;
