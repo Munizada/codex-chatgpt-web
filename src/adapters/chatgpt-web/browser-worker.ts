@@ -138,6 +138,13 @@ export function chatGptResponseDomGraceMs(compaction: boolean): number {
 export const CHATGPT_EMPTY_RESPONSE_GRACE_MS = 10_000;
 export const CHATGPT_COMPLETION_ACTION_GRACE_MS = 60_000;
 export const CHATGPT_COMPLETION_SETTLE_MS = 2_000;
+/**
+ * A browser turn may legitimately run for a long time, but it must keep producing observable
+ * model/tool progress. After fifteen silent minutes, rebind the leased launcher page once; if the
+ * same running turn remains silent for another five minutes, fail it instead of heartbeating forever.
+ */
+export const CHATGPT_RUNNING_STALL_RECOVERY_MS = 15 * 60_000;
+export const CHATGPT_RUNNING_STALL_POST_RECOVERY_GRACE_MS = 5 * 60_000;
 export const CHATGPT_TOOL_CONFIRMATION_TIMEOUT_MS = 60_000;
 export const MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS = 3;
 const CHATGPT_CONNECTOR_MENTION_QUERY = "@codex";
@@ -1568,6 +1575,57 @@ export class ChatGptCompletionTracker {
       return false;
     }
     return now - this.candidate.since >= this.stableMs;
+  }
+}
+
+export type ChatGptRunningStallAction = "recover" | "fail";
+
+export class ChatGptRunningStallTracker {
+  private lastProgressRevision?: number;
+  private lastProgressAt?: number;
+  private recoveredAt?: number;
+
+  constructor(
+    private readonly recoveryMs = CHATGPT_RUNNING_STALL_RECOVERY_MS,
+    private readonly postRecoveryGraceMs = CHATGPT_RUNNING_STALL_POST_RECOVERY_GRACE_MS,
+  ) {}
+
+  update(
+    state: { running: boolean; progressRevision: number },
+    now = Date.now(),
+  ): ChatGptRunningStallAction | undefined {
+    if (!Number.isFinite(now)
+      || !Number.isSafeInteger(state.progressRevision)
+      || state.progressRevision < 0) {
+      throw new Error("ChatGPT running-stall tracker received invalid progress");
+    }
+    if (!state.running) {
+      this.lastProgressRevision = undefined;
+      this.lastProgressAt = undefined;
+      this.recoveredAt = undefined;
+      return undefined;
+    }
+    if (this.lastProgressRevision === undefined || state.progressRevision > this.lastProgressRevision) {
+      this.lastProgressRevision = state.progressRevision;
+      this.lastProgressAt = now;
+      this.recoveredAt = undefined;
+      return undefined;
+    }
+    if (state.progressRevision < this.lastProgressRevision) {
+      throw new Error("ChatGPT running-stall progress revision regressed");
+    }
+    this.lastProgressAt ??= now;
+    if (this.recoveredAt !== undefined) {
+      return now - this.recoveredAt >= this.postRecoveryGraceMs ? "fail" : undefined;
+    }
+    return now - this.lastProgressAt >= this.recoveryMs ? "recover" : undefined;
+  }
+
+  markRecovered(now = Date.now()): void {
+    if (!Number.isFinite(now) || this.lastProgressAt === undefined) {
+      throw new Error("ChatGPT running-stall recovery marker is invalid");
+    }
+    this.recoveredAt = now;
   }
 }
 
@@ -5286,6 +5344,8 @@ export class ChatGptBrowserWorker {
       const sentAt = Date.now();
       const visibleTrace = new ChatGptVisibleTraceTracker();
       const markdownBuffer = new ChatGptMarkdownBuffer();
+      const runningStallTracker = new ChatGptRunningStallTracker();
+      let modelProgressRevision = 0;
       const checkpointStream = turn.captureLunaCheckpoint
         ? new ChatGptLunaCheckpointStream()
         : undefined;
@@ -5440,11 +5500,65 @@ export class ChatGptBrowserWorker {
               return throwMarkdownConsistencyError(error);
             }
           })();
-          for (const trace of visibleTrace.observe(snapshot.traceBlocks, snapshot.completionActionVisible)) {
+          const traceEvents = visibleTrace.observe(snapshot.traceBlocks, snapshot.completionActionVisible);
+          for (const trace of traceEvents) {
+            modelProgressRevision += 1;
             if (trace.kind === "commentary") turn.onCommentary?.(trace.text, trace.continuation === true);
             else turn.onReasoningSummary?.(trace.text, trace.continuation === true);
           }
-          if (textDelta) emitMarkdownDelta(textDelta);
+          if (textDelta) {
+            modelProgressRevision += 1;
+            emitMarkdownDelta(textDelta);
+          }
+          const runningStallAction = runningStallTracker.update({
+            running,
+            progressRevision: modelProgressRevision + (externalProgressSnapshot?.revision ?? 0),
+          });
+          if (runningStallAction === "recover") {
+            const cause = new Error(
+              `ChatGPT remained marked as running without observable model or tool progress for ${CHATGPT_RUNNING_STALL_RECOVERY_MS / 60_000} minutes`,
+            );
+            if (!launcherObservationRecovery) {
+              throw new ChatGptWebAdapterError(cause.message, {
+                status: 504,
+                errorType: "server_error",
+                code: "browser_turn_stalled",
+                retryable: false,
+                cause,
+              });
+            }
+            console.warn(
+              `[chatgpt-web] browser turn ${turn.traceId} has no observable progress while still running; rebinding its leased page once`,
+            );
+            await diagnostics.capture(page, "response-running-stalled");
+            await rebindLauncherPage(1, cause, turn.abortSignal);
+            submissionBaseline = {
+              ...submissionBaseline,
+              userTurns: page.locator(CHATGPT_USER_TURN_SELECTOR),
+              responseTurns: page.locator(CHATGPT_ASSISTANT_TURN_SELECTOR),
+              domCache: {},
+            };
+            responseTurn = {
+              ...responseTurn,
+              locator: page.locator(chatGptAssistantTurnSelector(responseTurn.identity)),
+            };
+            responseDomCache.key = undefined;
+            responseDomCache.snapshot = undefined;
+            runningStallTracker.markRecovered();
+            await diagnostics.capture(page, "response-running-stall-rebound");
+            continue;
+          }
+          if (runningStallAction === "fail") {
+            throw new ChatGptWebAdapterError(
+              `ChatGPT remained marked as running without observable progress for ${CHATGPT_RUNNING_STALL_POST_RECOVERY_GRACE_MS / 60_000} minutes after browser recovery`,
+              {
+                status: 504,
+                errorType: "server_error",
+                code: "browser_turn_stalled",
+                retryable: false,
+              },
+            );
+          }
           const domError = domHealthTracker.update({
             responsePresent: snapshot.responsePresent,
             running,
