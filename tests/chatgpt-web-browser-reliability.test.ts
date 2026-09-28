@@ -6,6 +6,7 @@ import {
   CHATGPT_COMPACTION_RESPONSE_DOM_GRACE_MS,
   CHATGPT_RESPONSE_DOM_GRACE_MS,
   ChatGptTurnDomHealthTracker,
+  connectAfterClosingBrowserConnection,
   chatGptResponseDomGraceMs,
 } from "../src/adapters/chatgpt-web/browser-worker";
 
@@ -26,6 +27,31 @@ test("compaction gets a longer missing-response grace than ordinary turns", () =
   expect(tracker.update(absent, 60_001)).toBeUndefined();
   expect(tracker.update(absent, 179_999)).toBeUndefined();
   expect(tracker.update(absent, 180_000)).toContain("did not create a response DOM");
+});
+
+test("browser rebind closes the stale transport before connecting a replacement", async () => {
+  const events: string[] = [];
+  const replacement = await connectAfterClosingBrowserConnection(
+    { close: async () => { events.push("close"); } },
+    async () => {
+      events.push("connect");
+      return "replacement";
+    },
+  );
+  expect(replacement).toBe("replacement");
+  expect(events).toEqual(["close", "connect"]);
+});
+
+test("browser rebind never opens a replacement when stale transport cleanup fails", async () => {
+  let connected = false;
+  await expect(connectAfterClosingBrowserConnection(
+    { close: async () => { throw new Error("close failed"); } },
+    async () => {
+      connected = true;
+      return "replacement";
+    },
+  )).rejects.toThrow("close failed");
+  expect(connected).toBeFalse();
 });
 
 test("launcher rebind retries page acquisition before killing a live turn", () => {
