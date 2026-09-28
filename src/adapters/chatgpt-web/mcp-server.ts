@@ -51,7 +51,10 @@ export const CHATGPT_WEB_LONG_TOOL_INVOCATION_TIMEOUT_MS = 110_000;
 // exec_command must yield before the MCP/tunnel boundary so long-running work can continue through
 // write_stdin instead of keeping a single MCP request open until the bridge retires the turn.
 export const CHATGPT_WEB_EXEC_DEFAULT_YIELD_MS = 30_000;
-export const CHATGPT_WEB_RELIABILITY_PATCH_REVISION = "v6.1.3-r2";
+// write_stdin may advertise a much longer poll, but this bridge must settle before the
+// 110-second MCP cap so the tunnel has time to carry the result or a bounded error.
+export const CHATGPT_WEB_WRITE_STDIN_MAX_YIELD_MS = 90_000;
+export const CHATGPT_WEB_RELIABILITY_PATCH_REVISION = "v6.1.3-r3";
 
 const LONG_RUNNING_TOOL_SUFFIXES = [
   "exec",
@@ -232,8 +235,15 @@ export function chatGptTransportBoundToolArguments(
   name: string,
   args: Record<string, unknown>,
 ): Record<string, unknown> {
-  if (name !== "exec_command" || Object.hasOwn(args, "yield_time_ms")) return args;
-  return { ...args, yield_time_ms: CHATGPT_WEB_EXEC_DEFAULT_YIELD_MS };
+  if (name === "exec_command" && !Object.hasOwn(args, "yield_time_ms")) {
+    return { ...args, yield_time_ms: CHATGPT_WEB_EXEC_DEFAULT_YIELD_MS };
+  }
+  if ((name === "write_stdin" || name.endsWith("__write_stdin"))
+    && typeof args.yield_time_ms === "number"
+    && args.yield_time_ms > CHATGPT_WEB_WRITE_STDIN_MAX_YIELD_MS) {
+    return { ...args, yield_time_ms: CHATGPT_WEB_WRITE_STDIN_MAX_YIELD_MS };
+  }
+  return args;
 }
 
 export function chatGptMcpInvocationTimeout(
@@ -455,6 +465,7 @@ function transportBoundRawExecProgram(input: string, blockedExecName: string): s
     `  const blockedExecName = ${JSON.stringify(blockedExecName)};`,
     `  const pollMs = ${CHATGPT_WEB_AGENT_WAIT_POLL_MS};`,
     `  const execYieldMs = ${CHATGPT_WEB_EXEC_DEFAULT_YIELD_MS};`,
+    `  const writeStdinMaxYieldMs = ${CHATGPT_WEB_WRITE_STDIN_MAX_YIELD_MS};`,
     "  const registryNames = new Set(Reflect.ownKeys(source));",
     "  if (typeof ALL_TOOLS !== \"undefined\" && Array.isArray(ALL_TOOLS)) {",
     "    for (const tool of ALL_TOOLS) if (typeof tool?.name === \"string\") registryNames.add(tool.name);",
@@ -470,6 +481,13 @@ function transportBoundRawExecProgram(input: string, blockedExecName: string): s
     "      exposed = args => {",
     "        const normalized = args && typeof args === \"object\" && !Array.isArray(args) ? args : {};",
     "        const guarded = Object.prototype.hasOwnProperty.call(normalized, \"yield_time_ms\") ? normalized : { ...normalized, yield_time_ms: execYieldMs };",
+    "        return Reflect.apply(value, source, [guarded]);",
+    "      };",
+    "    } else if (typeof value === \"function\" && typeof name === \"string\" && (name === \"write_stdin\" || name.endsWith(\"__write_stdin\"))) {",
+    "      exposed = args => {",
+    "        const normalized = args && typeof args === \"object\" && !Array.isArray(args) ? args : {};",
+    "        const guarded = typeof normalized.yield_time_ms === \"number\" && normalized.yield_time_ms > writeStdinMaxYieldMs",
+    "          ? { ...normalized, yield_time_ms: writeStdinMaxYieldMs } : normalized;",
     "        return Reflect.apply(value, source, [guarded]);",
     "      };",
     "    } else if (typeof value === \"function\" && typeof name === \"string\" && waitNames.has(name)) {",
@@ -775,7 +793,7 @@ export async function runChatGptMcpServer(options: {
         ...turnReferenceInput(contract),
         session_id: z.number().int().nonnegative(),
         chars: z.string().max(1_000_000).optional(),
-        yield_time_ms: z.number().int().min(250).max(300_000).optional(),
+        yield_time_ms: z.number().int().min(250).max(CHATGPT_WEB_WRITE_STDIN_MAX_YIELD_MS).optional(),
         max_output_tokens: z.number().int().min(1).max(1_000_000).optional(),
       },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
@@ -788,12 +806,12 @@ export async function runChatGptMcpServer(options: {
         const { session_id, chars, yield_time_ms, max_output_tokens } = input;
         const bound = claimed.environment;
         const tool = exactTool(bound, "write_stdin");
-        const payload = { arguments: {
+        const payload = { arguments: chatGptTransportBoundToolArguments("write_stdin", {
           session_id,
           ...(chars !== undefined ? { chars } : {}),
           ...(yield_time_ms !== undefined ? { yield_time_ms } : {}),
           ...(max_output_tokens !== undefined ? { max_output_tokens } : {}),
-        } };
+        }) };
         return tool
           ? invoke(claimed.bindingId, bound, tool, payload, extra.signal)
           : invokeNestedNative(claimed.bindingId, bound, "write_stdin", false, payload, extra.signal);
