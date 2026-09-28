@@ -51,10 +51,13 @@ export const CHATGPT_WEB_LONG_TOOL_INVOCATION_TIMEOUT_MS = 110_000;
 // exec_command must yield before the MCP/tunnel boundary so long-running work can continue through
 // write_stdin instead of keeping a single MCP request open until the bridge retires the turn.
 export const CHATGPT_WEB_EXEC_DEFAULT_YIELD_MS = 30_000;
+// Generic native exec surfaces can advertise yields longer than this bridge can keep one MCP
+// invocation alive. Preserve shorter explicit yields, but cap longer ones below the 110s boundary.
+export const CHATGPT_WEB_EXEC_MAX_YIELD_MS = 90_000;
 // write_stdin may advertise a much longer poll, but this bridge must settle before the
 // 110-second MCP cap so the tunnel has time to carry the result or a bounded error.
 export const CHATGPT_WEB_WRITE_STDIN_MAX_YIELD_MS = 90_000;
-export const CHATGPT_WEB_RELIABILITY_PATCH_REVISION = "v6.1.3-r3";
+export const CHATGPT_WEB_RELIABILITY_PATCH_REVISION = "v6.1.3-r4";
 
 const LONG_RUNNING_TOOL_SUFFIXES = [
   "exec",
@@ -235,8 +238,14 @@ export function chatGptTransportBoundToolArguments(
   name: string,
   args: Record<string, unknown>,
 ): Record<string, unknown> {
-  if (name === "exec_command" && !Object.hasOwn(args, "yield_time_ms")) {
+  const execCommand = name === "exec_command" || name.endsWith("__exec_command");
+  if (execCommand && !Object.hasOwn(args, "yield_time_ms")) {
     return { ...args, yield_time_ms: CHATGPT_WEB_EXEC_DEFAULT_YIELD_MS };
+  }
+  if (execCommand
+    && typeof args.yield_time_ms === "number"
+    && args.yield_time_ms > CHATGPT_WEB_EXEC_MAX_YIELD_MS) {
+    return { ...args, yield_time_ms: CHATGPT_WEB_EXEC_MAX_YIELD_MS };
   }
   if ((name === "write_stdin" || name.endsWith("__write_stdin"))
     && typeof args.yield_time_ms === "number"
@@ -465,6 +474,7 @@ function transportBoundRawExecProgram(input: string, blockedExecName: string): s
     `  const blockedExecName = ${JSON.stringify(blockedExecName)};`,
     `  const pollMs = ${CHATGPT_WEB_AGENT_WAIT_POLL_MS};`,
     `  const execYieldMs = ${CHATGPT_WEB_EXEC_DEFAULT_YIELD_MS};`,
+    `  const execMaxYieldMs = ${CHATGPT_WEB_EXEC_MAX_YIELD_MS};`,
     `  const writeStdinMaxYieldMs = ${CHATGPT_WEB_WRITE_STDIN_MAX_YIELD_MS};`,
     "  const registryNames = new Set(Reflect.ownKeys(source));",
     "  if (typeof ALL_TOOLS !== \"undefined\" && Array.isArray(ALL_TOOLS)) {",
@@ -477,10 +487,11 @@ function transportBoundRawExecProgram(input: string, blockedExecName: string): s
     "    let exposed = value;",
     "    if (typeof value === \"function\" && name === blockedExecName) {",
     "      exposed = () => { throw new Error(\"Nested raw exec is unavailable inside ChatGPT Web exec\"); };",
-    "    } else if (typeof value === \"function\" && name === \"exec_command\") {",
+    "    } else if (typeof value === \"function\" && typeof name === \"string\" && (name === \"exec_command\" || name.endsWith(\"__exec_command\"))) {",
     "      exposed = args => {",
     "        const normalized = args && typeof args === \"object\" && !Array.isArray(args) ? args : {};",
-    "        const guarded = Object.prototype.hasOwnProperty.call(normalized, \"yield_time_ms\") ? normalized : { ...normalized, yield_time_ms: execYieldMs };",
+    "        let guarded = Object.prototype.hasOwnProperty.call(normalized, \"yield_time_ms\") ? normalized : { ...normalized, yield_time_ms: execYieldMs };",
+    "        if (typeof guarded.yield_time_ms === \"number\" && guarded.yield_time_ms > execMaxYieldMs) guarded = { ...guarded, yield_time_ms: execMaxYieldMs };",
     "        return Reflect.apply(value, source, [guarded]);",
     "      };",
     "    } else if (typeof value === \"function\" && typeof name === \"string\" && (name === \"write_stdin\" || name.endsWith(\"__write_stdin\"))) {",
