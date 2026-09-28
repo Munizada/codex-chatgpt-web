@@ -3328,7 +3328,7 @@ describe("ChatGPT outer-native harness v4", () => {
       expect(execRequest?.input).toContain("ALL_TOOLS");
       expect(execRequest?.input).toContain('"exec_command"');
       expect(execRequest?.input).toContain('"shell_command"');
-      expect(execRequest?.input).toContain(JSON.stringify({ cmd: "pwd", workdir: tempRoot }));
+      expect(execRequest?.input).toContain(JSON.stringify({ cmd: "pwd", workdir: tempRoot, yield_time_ms: CHATGPT_WEB_EXEC_DEFAULT_YIELD_MS }));
       broker.completeTool(token, execRequest!.callId, toolResult({ output: tempRoot, exit_code: 0 }));
       expect((await execPromise).structuredContent).toEqual({ output: tempRoot, exit_code: 0 });
     } finally {
