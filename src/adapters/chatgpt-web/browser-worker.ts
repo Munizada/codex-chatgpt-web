@@ -2418,10 +2418,13 @@ export class ChatGptBrowserWorker {
     action: (abortSignal: AbortSignal) => Promise<T>,
     suspensionClock: Pick<ChatGptSuspensionClock, "suspendedMs"> = chatGptSuspensionClock,
     awaitAbortedActionSettlement = false,
+    progressClock?: Pick<ChatGptTurnProgressReader, "snapshot">,
   ): Promise<T> {
     chatGptSuspensionClock.start();
     const startedAt = performance.now();
     const suspendedAtStart = suspensionClock.suspendedMs();
+    let progressRevision = progressClock?.snapshot().revision ?? 0;
+    let progressCreditMs = 0;
     console.info(`[chatgpt-web] browser turn ${traceId} stage=${stage} started`);
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -2433,9 +2436,23 @@ export class ChatGptBrowserWorker {
           // A stage that spans a system sleep has not consumed its budget: the browser was as
           // frozen as this process, so slept time is refunded before the timer is re-armed.
           const suspendedMs = suspensionClock.suspendedMs() - suspendedAtStart;
-          const remaining = remainingStageBudgetMs(timeoutMs, performance.now() - startedAt, suspendedMs);
+          const remaining = remainingStageBudgetMs(
+            timeoutMs + progressCreditMs,
+            performance.now() - startedAt,
+            suspendedMs,
+          );
           if (remaining > 0) {
             timer = setTimeout(fireOrRearm, remaining);
+            return;
+          }
+          const latestProgressRevision = progressClock?.snapshot().revision ?? progressRevision;
+          if (latestProgressRevision > progressRevision) {
+            // Proven MCP activity means Send was accepted even if ChatGPT's DOM is late to expose
+            // the submitted turn. Grant one fresh stage budget so the browser can capture the
+            // pre-tool answer boundary required by the causal tool-delivery barrier.
+            progressRevision = latestProgressRevision;
+            progressCreditMs += timeoutMs;
+            timer = setTimeout(fireOrRearm, timeoutMs);
             return;
           }
           stageTimedOut = true;
@@ -5307,6 +5324,9 @@ export class ChatGptBrowserWorker {
             }
             : undefined,
         ),
+        chatGptSuspensionClock,
+        false,
+        turn.externalProgress,
       );
       console.info(`[chatgpt-web] browser turn ${turn.traceId} submission accepted evidence=${finalSubmissionEvidence}`);
       let responseTurn = await this.waitForNewAssistantTurn(
