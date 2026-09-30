@@ -6,7 +6,9 @@ import {
   CHATGPT_COMPACTION_RESPONSE_DOM_GRACE_MS,
   CHATGPT_RESPONSE_DOM_GRACE_MS,
   CHATGPT_RUNNING_STALL_GRACE_MS,
+  CHATGPT_QUIESCENT_STALL_GRACE_MS,
   ChatGptRunningStallTracker,
+  ChatGptQuiescentStallTracker,
   ChatGptTurnDomHealthTracker,
   connectAfterClosingBrowserConnection,
   chatGptResponseDomGraceMs,
@@ -30,6 +32,30 @@ test("a visibly running turn must still make observable progress", () => {
   expect(tracker.update({ ...stalled, externalProgressLive: true }, CHATGPT_RUNNING_STALL_GRACE_MS * 2)).toBeFalse();
   expect(tracker.update(stalled, CHATGPT_RUNNING_STALL_GRACE_MS * 3)).toBeFalse();
   expect(tracker.update({ ...stalled, running: false }, CHATGPT_RUNNING_STALL_GRACE_MS * 4)).toBeFalse();
+});
+
+test("a quiescent incomplete turn must still make observable progress", () => {
+  expect(CHATGPT_QUIESCENT_STALL_GRACE_MS).toBe(10 * 60_000);
+  const tracker = new ChatGptQuiescentStallTracker();
+  const stalled = {
+    responsePresent: true,
+    running: false,
+    currentText: "",
+    progressSignature: "status: waiting",
+    completionActionVisible: false,
+    externalProgressLive: false,
+  };
+  expect(tracker.update(stalled, 0)).toBeFalse();
+  expect(tracker.update(stalled, CHATGPT_QUIESCENT_STALL_GRACE_MS - 1)).toBeFalse();
+  expect(tracker.update(stalled, CHATGPT_QUIESCENT_STALL_GRACE_MS)).toBeTrue();
+
+  expect(tracker.update({ ...stalled, progressSignature: "status: next" }, CHATGPT_QUIESCENT_STALL_GRACE_MS + 1)).toBeFalse();
+  expect(tracker.update({ ...stalled, externalProgressLive: true }, CHATGPT_QUIESCENT_STALL_GRACE_MS * 2)).toBeFalse();
+  expect(tracker.update(stalled, CHATGPT_QUIESCENT_STALL_GRACE_MS * 3)).toBeFalse();
+  expect(tracker.update({ ...stalled, running: true }, CHATGPT_QUIESCENT_STALL_GRACE_MS * 4)).toBeFalse();
+  expect(tracker.update({ ...stalled, completionActionVisible: true }, CHATGPT_QUIESCENT_STALL_GRACE_MS * 5)).toBeFalse();
+  expect(tracker.update({ ...stalled, currentText: "answer" }, CHATGPT_QUIESCENT_STALL_GRACE_MS * 6)).toBeFalse();
+  expect(tracker.update({ ...stalled, responsePresent: false }, CHATGPT_QUIESCENT_STALL_GRACE_MS * 7)).toBeFalse();
 });
 
 test("compaction gets a longer missing-response grace than ordinary turns", () => {

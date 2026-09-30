@@ -141,6 +141,7 @@ export const CHATGPT_COMPLETION_ACTION_GRACE_MS = 60_000;
 // MCP activity both remain unchanged for this long, rebind once and then fail closed rather than
 // keeping the outer Codex turn alive forever through heartbeats.
 export const CHATGPT_RUNNING_STALL_GRACE_MS = 10 * 60_000;
+export const CHATGPT_QUIESCENT_STALL_GRACE_MS = 10 * 60_000;
 export const CHATGPT_COMPLETION_SETTLE_MS = 2_000;
 export const CHATGPT_TOOL_CONFIRMATION_TIMEOUT_MS = 60_000;
 export const MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS = 3;
@@ -1602,6 +1603,43 @@ export class ChatGptRunningStallTracker {
     }
     this.since ??= now;
     return now - this.since >= CHATGPT_RUNNING_STALL_GRACE_MS;
+  }
+}
+
+export class ChatGptQuiescentStallTracker {
+  private signature?: string;
+  private since?: number;
+
+  reset(): void {
+    this.signature = undefined;
+    this.since = undefined;
+  }
+
+  update(state: {
+    responsePresent: boolean;
+    running: boolean;
+    currentText: string;
+    progressSignature: string;
+    completionActionVisible: boolean;
+    externalProgressLive: boolean;
+  }, now = Date.now()): boolean {
+    const quiescentIncomplete = state.responsePresent
+      && !state.running
+      && state.currentText.length === 0
+      && !state.completionActionVisible
+      && !state.externalProgressLive;
+    if (!quiescentIncomplete) {
+      this.reset();
+      return false;
+    }
+    const signature = `${state.currentText}\0${state.progressSignature}`;
+    if (this.signature !== signature) {
+      this.signature = signature;
+      this.since = now;
+      return false;
+    }
+    this.since ??= now;
+    return now - this.since >= CHATGPT_QUIESCENT_STALL_GRACE_MS;
   }
 }
 
@@ -5381,6 +5419,8 @@ export class ChatGptBrowserWorker {
       );
       const runningStallTracker = new ChatGptRunningStallTracker();
       let runningStallRecoveries = 0;
+      const quiescentStallTracker = new ChatGptQuiescentStallTracker();
+      let quiescentStallRecoveries = 0;
       const responseDomCache: ChatGptResponseDomCache = {};
       let consecutiveObservationRebinds = 0;
       let internalObservationFaults = 0;
@@ -5501,14 +5541,15 @@ export class ChatGptBrowserWorker {
         const stop = page.locator(CHATGPT_STOP_BUTTON_SELECTOR).last();
         const running = await stop.isVisible().catch(() => false);
         if (running) sawRunning = true;
+        const progressSignature = JSON.stringify(snapshot.traceBlocks.map(block => ({
+          kind: block.kind,
+          text: block.text,
+          complete: block.complete === true,
+        })));
         const runningStalled = runningStallTracker.update({
           running,
           currentText: snapshot.visibleText,
-          progressSignature: JSON.stringify(snapshot.traceBlocks.map(block => ({
-            kind: block.kind,
-            text: block.text,
-            complete: block.complete === true,
-          }))),
+          progressSignature,
           externalProgressLive,
         });
         if (runningStalled) {
@@ -5533,11 +5574,50 @@ export class ChatGptBrowserWorker {
             responseDomCache.key = undefined;
             responseDomCache.snapshot = undefined;
             runningStallTracker.reset();
+            quiescentStallTracker.reset();
             await diagnostics.capture(page, "running-stall-rebound");
             continue;
           }
           throw new Error(
             `ChatGPT remained visibly generating without observable progress for ${CHATGPT_RUNNING_STALL_GRACE_MS}ms`,
+          );
+        }
+        const quiescentStalled = quiescentStallTracker.update({
+          responsePresent: snapshot.responsePresent,
+          running,
+          currentText: snapshot.visibleText,
+          progressSignature,
+          completionActionVisible: snapshot.completionActionVisible,
+          externalProgressLive,
+        });
+        if (quiescentStalled) {
+          if (launcherSurfaceId && quiescentStallRecoveries === 0) {
+            quiescentStallRecoveries += 1;
+            console.warn(
+              `[chatgpt-web] browser turn ${turn.traceId} remained quiescent without completion evidence for ${CHATGPT_QUIESCENT_STALL_GRACE_MS}ms; rebinding once before failing`,
+            );
+            await rebindLauncherPage(MAX_CHATGPT_BROWSER_PAGE_REBINDS + 1, new Error(
+              "ChatGPT remained quiescent without completion evidence",
+            ), turn.abortSignal);
+            submissionBaseline = {
+              ...submissionBaseline,
+              userTurns: page.locator(CHATGPT_USER_TURN_SELECTOR),
+              responseTurns: page.locator(CHATGPT_ASSISTANT_TURN_SELECTOR),
+              domCache: {},
+            };
+            responseTurn = {
+              ...responseTurn,
+              locator: page.locator(chatGptAssistantTurnSelector(responseTurn.identity)),
+            };
+            responseDomCache.key = undefined;
+            responseDomCache.snapshot = undefined;
+            runningStallTracker.reset();
+            quiescentStallTracker.reset();
+            await diagnostics.capture(page, "quiescent-stall-rebound");
+            continue;
+          }
+          throw new Error(
+            `ChatGPT remained quiescent without completion evidence for ${CHATGPT_QUIESCENT_STALL_GRACE_MS}ms`,
           );
         }
         if (snapshot.responsePresent) {
