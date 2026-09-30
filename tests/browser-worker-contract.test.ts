@@ -386,6 +386,9 @@ test("browser stage timeout aborts late page acquisition", async () => {
       stage: string,
       timeoutMs: number,
       action: (signal: AbortSignal) => Promise<T>,
+      suspensionClock?: { suspendedMs(): number },
+      awaitAbortedActionSettlement?: boolean,
+      progressClock?: Pick<ChatGptExternalTurnProgress, "snapshot">,
     ): Promise<T>;
   }).runStage;
 
@@ -753,6 +756,85 @@ test("an accepted Full-mode send survives one stalled DOM probe and a later MCP 
   } finally {
     clearTimeout(timer);
   }
+});
+
+test("Send gets one fresh stage budget when proven MCP progress arrives before timeout", async () => {
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web",
+    baseUrl: `browser://send-mcp-progress-${Date.now()}-${Math.random()}`,
+    chatgptWeb: {
+      localToolsEnabled: true,
+      solAvailable: true,
+      extraHighAvailable: true,
+      proAvailable: true,
+      storageStatePath: `/tmp/send-mcp-progress-${Date.now()}-${Math.random()}.json`,
+    },
+  };
+  const worker = ChatGptBrowserWorker.forProvider(provider) as unknown as {
+    runStage<T>(
+      traceId: string,
+      stage: string,
+      timeoutMs: number,
+      action: (signal: AbortSignal) => Promise<T>,
+      suspensionClock?: { suspendedMs(): number },
+      awaitAbortedActionSettlement?: boolean,
+      progressClock?: Pick<ChatGptExternalTurnProgress, "snapshot">,
+    ): Promise<T>;
+  };
+  const progress = new ChatGptExternalTurnProgress();
+  const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+  const result = worker.runStage(
+    "send-mcp-progress",
+    "send",
+    40,
+    async signal => {
+      await sleep(25);
+      if (signal.aborted) throw new DOMException("aborted", "AbortError");
+      progress.recordToolBatch(1);
+      await sleep(30);
+      if (signal.aborted) throw new DOMException("aborted", "AbortError");
+      return "mcp_tool_call";
+    },
+    { suspendedMs: () => 0 },
+    false,
+    progress,
+  );
+  await expect(result).resolves.toBe("mcp_tool_call");
+});
+
+test("Send still times out normally when no MCP progress is proven", async () => {
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web",
+    baseUrl: `browser://send-no-progress-${Date.now()}-${Math.random()}`,
+    chatgptWeb: {
+      localToolsEnabled: true,
+      solAvailable: true,
+      extraHighAvailable: true,
+      proAvailable: true,
+      storageStatePath: `/tmp/send-no-progress-${Date.now()}-${Math.random()}.json`,
+    },
+  };
+  const worker = ChatGptBrowserWorker.forProvider(provider) as unknown as {
+    runStage<T>(
+      traceId: string,
+      stage: string,
+      timeoutMs: number,
+      action: (signal: AbortSignal) => Promise<T>,
+      suspensionClock?: { suspendedMs(): number },
+      awaitAbortedActionSettlement?: boolean,
+      progressClock?: Pick<ChatGptExternalTurnProgress, "snapshot">,
+    ): Promise<T>;
+  };
+  const progress = new ChatGptExternalTurnProgress();
+  await expect(worker.runStage(
+    "send-no-progress",
+    "send",
+    25,
+    () => new Promise<never>(() => {}),
+    { suspendedMs: () => 0 },
+    false,
+    progress,
+  )).rejects.toThrow("ChatGPT browser stage timed out: send");
 });
 
 test("Bigger Context send activation keeps the outer stage budget instead of restoring a nested 20-second timeout", async () => {
