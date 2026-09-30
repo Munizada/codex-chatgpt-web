@@ -3172,6 +3172,7 @@ export class ChatGptBrowserWorker {
     baseline: ChatGptSubmissionBaseline,
     binding: ChatGptAssistantTurnBinding,
     signal?: AbortSignal,
+    allowAcceptedUserIdentityRekey = false,
   ): Promise<ChatGptAssistantTurnBinding> {
     const boundCount = await withChatGptBrowserObservationTimeout(
       withBrowserTurnAbort(binding.locator.count(), signal),
@@ -3203,21 +3204,35 @@ export class ChatGptBrowserWorker {
       let matches = false;
       if (replacement) {
         const locator = page.locator(chatGptAssistantTurnSelector(identity!));
-        matches = baseline.acceptedUserIdentity
-          ? user === baseline.acceptedUserIdentity
-          : Boolean(baseline.submittedText) && await withChatGptBrowserObservationTimeout(withBrowserTurnAbort(locator.evaluate((group, submitted) => {
-          const bubbles = group.querySelectorAll<HTMLElement>("[data-user-message-bubble]");
-          const contents = bubbles.length === 1
-            ? bubbles[0]!.querySelectorAll<HTMLElement>("[data-search-result-target]")
-            : [];
-          const normalize = (text: string) => text.replace(/\r\n?/g, "\n");
-          // The bubble also contains Show more and accessibility spacing. Only its
-          // observed message-content target represents the submitted prompt.
-          return contents.length === 1 && normalize(contents[0]!.innerText) === normalize(submitted);
-        }, baseline.submittedText!), signal));
-        // The accepted user identity (or exact submitted text) establishes ownership.
-        // Activity can replace its temporary group while still generating; requiring
-        // a completed answer here mistakes that same unfinished turn for a foreign one.
+        const acceptedUserIdentity = baseline.acceptedUserIdentity;
+        const acceptedIdentityStillMounted = acceptedUserIdentity
+          ? state.turnIdentities.includes(acceptedUserIdentity)
+          : false;
+        const acceptedIdentityRekey = Boolean(
+          acceptedUserIdentity
+          && user !== acceptedUserIdentity
+          && allowAcceptedUserIdentityRekey
+          && !acceptedIdentityStillMounted,
+        );
+        matches = acceptedUserIdentity ? user === acceptedUserIdentity : false;
+        if (!matches
+          && (!acceptedUserIdentity || acceptedIdentityRekey)
+          && baseline.submittedText) {
+          matches = await withChatGptBrowserObservationTimeout(withBrowserTurnAbort(locator.evaluate((group, submitted) => {
+            const bubbles = group.querySelectorAll<HTMLElement>("[data-user-message-bubble]");
+            const contents = bubbles.length === 1
+              ? bubbles[0]!.querySelectorAll<HTMLElement>("[data-search-result-target]")
+              : [];
+            const normalize = (text: string) => text.replace(/\r\n?/g, "\n");
+            // The bubble also contains Show more and accessibility spacing. Only its
+            // observed message-content target represents the submitted prompt.
+            return contents.length === 1 && normalize(contents[0]!.innerText) === normalize(submitted);
+          }, baseline.submittedText), signal));
+        }
+        if (matches && acceptedIdentityRekey) baseline.acceptedUserIdentity = user;
+        // The accepted user identity normally owns the turn. A live tool call from this exact
+        // broker trace additionally permits a renderer re-key only when the old user group is
+        // gone and the replacement contains the entire submitted prompt exactly.
       }
       if (!matches) throw new Error("ChatGPT opened another user turn while the bound assistant response was detached");
     }
@@ -5390,12 +5405,14 @@ export class ChatGptBrowserWorker {
         let snapshot = await this.responseDomSnapshot(responseTurn.locator, responseDomCache);
         if (!snapshot.responsePresent) {
           try {
+            const rebindProgressSnapshot = turn.externalProgress?.snapshot();
             const rebound = await withChatGptBrowserObservationTimeout(
               this.reconcileAssistantTurnBinding(
                 page,
                 submissionBaseline,
                 responseTurn,
                 turn.abortSignal,
+                chatGptExternalToolCallsAreInFlight(rebindProgressSnapshot),
               ),
             );
             if (rebound.identity !== responseTurn.identity) {

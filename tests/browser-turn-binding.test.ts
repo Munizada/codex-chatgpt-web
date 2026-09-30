@@ -39,7 +39,7 @@ test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("preserves the accepted user 
     // during Activity, then returns with the same ID and a rich-text user bubble.
     const user = '<div data-user-message-bubble><div data-search-result-target><p><span data-prompt-link-href="app://test">Codex Native</span> Read first.txt.<br>Return its contents.</p></div></div>';
     const answer = '<div data-content-search-unit-key="fallback-turn-0:2:assistant"><div data-conversation-role="assistant"></div><div data-markdown-text-style="assistant-message"><p>FIRST fixture-marker</p></div></div><div class="turn-action-controls"><button>Copy</button></div>';
-    for (const scenario of ["same-user", "different-user", "competing-turn", "old-group-remains", "unfinished", "streaming"] as const) {
+    for (const scenario of ["same-user", "different-user", "tool-rekey", "tool-rekey-mismatch", "tool-rekey-old-user-remains", "competing-turn", "old-group-remains", "unfinished", "streaming"] as const) {
       const page = await browser.newPage();
       await page.setContent('<main></main>');
       const baseline = await worker.captureSubmissionBaseline(page, prompt);
@@ -48,19 +48,25 @@ test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("preserves the accepted user 
       await page.locator("main").evaluate(node => { node.innerHTML = '<div data-turn-key="fallback-turn-0"><span hidden data-chatgpt-agent-turn-start></span></div>'; });
       const binding = await worker.waitForNewAssistantTurn(page, baseline, Date.now() + 2000);
       expect(binding.identity).toBe("group:assistant:fallback-turn-0");
-      const key = scenario === "different-user" ? "unrelated" : "submitted";
-      const renderedUser = scenario === "different-user"
-        ? `<div data-user-message-bubble><div data-search-result-target style="white-space:pre-wrap">${prompt}</div></div>`
+      const toolRekey = scenario === "tool-rekey"
+        || scenario === "tool-rekey-mismatch"
+        || scenario === "tool-rekey-old-user-remains";
+      const key = scenario === "different-user" ? "unrelated" : toolRekey ? "rekeyed" : "submitted";
+      const renderedUser = scenario === "different-user" || toolRekey
+        ? `<div data-user-message-bubble><div data-search-result-target style="white-space:pre-wrap">${scenario === "tool-rekey-mismatch" ? "Different task." : prompt}</div></div>`
         : user;
       const response = scenario === "unfinished" ? '<span hidden data-chatgpt-agent-turn-start></span>'
         : scenario === "streaming" ? answer.replace('<div class="turn-action-controls"><button>Copy</button></div>', "") : answer;
       let replacement = `<div data-turn-key="${key}">${renderedUser}${response}</div>`;
       if (scenario === "competing-turn") replacement += `<div data-turn-key="other">${user}</div>`;
       if (scenario === "old-group-remains") replacement += '<div data-turn-key="fallback-turn-0"></div>';
+      if (scenario === "tool-rekey-old-user-remains") replacement += `<div data-turn-key="submitted">${user}</div>`;
       await page.locator("main").evaluate((node, html) => { node.innerHTML = html; }, replacement);
-      const result = worker.reconcileAssistantTurnBinding(page, baseline, binding);
-      if (["same-user", "unfinished", "streaming"].includes(scenario)) {
-        expect((await result).identity).toBe("group:assistant:submitted");
+      const result = worker.reconcileAssistantTurnBinding(page, baseline, binding, undefined, toolRekey);
+      if (["same-user", "unfinished", "streaming", "tool-rekey"].includes(scenario)) {
+        const rebound = await result;
+        expect(rebound.identity).toBe(`group:assistant:${scenario === "tool-rekey" ? "rekeyed" : "submitted"}`);
+        if (scenario === "tool-rekey") expect(baseline.acceptedUserIdentity).toBe("group:user:rekeyed");
       } else {
         await expect(result).rejects.toThrow("another user turn");
       }
