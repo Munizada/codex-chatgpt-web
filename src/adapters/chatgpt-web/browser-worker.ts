@@ -1390,8 +1390,11 @@ export function chatGptSubmissionEvidence(state: {
   generationRunning: boolean;
 }): ChatGptSubmissionEvidence | undefined {
   if (chatGptNewTurnIdentity(state.initialTurnIdentities, state.userIdentities)) return "user_turn";
-  if (chatGptNewTurnIdentity(state.initialTurnIdentities, state.responseIdentities)) return "assistant_turn";
+  // A visible Stop control is direct evidence that this physical Send is generating. Prefer it
+  // over assistant-node identity while the renderer can temporarily expose both an Activity shell
+  // and its replacement response for the same exchange.
   if (state.generationRunning) return "generation_running";
+  if (chatGptNewTurnIdentity(state.initialTurnIdentities, state.responseIdentities)) return "assistant_turn";
   return undefined;
 }
 
@@ -1486,13 +1489,23 @@ export async function setChatGptThinkMode(
   await captureDiagnostic?.(enabled ? "think-enabled" : "think-disabled");
 }
 
+function chatGptAssistantIdentityForUser(userIdentity?: string): string | undefined {
+  const prefix = "group:user:";
+  if (!userIdentity?.startsWith(prefix)) return undefined;
+  return `group:assistant:${userIdentity.slice(prefix.length)}`;
+}
+
 export function chatGptNewTurnIdentity(
   initial: readonly string[],
   current: readonly string[],
+  preferredIdentity?: string,
 ): string | undefined {
   const previous = new Set(initial);
   const added = current.filter(identity => !previous.has(identity));
   if (added.length > 1) {
+    // ChatGPT can briefly expose both an Activity shell and its replacement assistant node.
+    // Only disambiguate when the submission already proved the exact paired user group.
+    if (preferredIdentity && added.includes(preferredIdentity)) return preferredIdentity;
     throw new Error(`ChatGPT exposed ${added.length} new conversation turns for one submitted message`);
   }
   return added[0];
@@ -1502,9 +1515,10 @@ export function chatGptReboundTurnIdentity(
   initial: readonly string[],
   boundIdentity: string,
   current: readonly string[],
+  preferredIdentity?: string,
 ): string | undefined {
   if (current.includes(boundIdentity)) return boundIdentity;
-  return chatGptNewTurnIdentity(initial, current);
+  return chatGptNewTurnIdentity(initial, current, preferredIdentity);
 }
 
 export class ChatGptCompletionTracker {
@@ -3088,6 +3102,7 @@ export class ChatGptBrowserWorker {
     const identity = chatGptNewTurnIdentity(
       baseline.initialTurnIdentities,
       state.responseIdentities,
+      chatGptAssistantIdentityForUser(baseline.acceptedUserIdentity),
     );
     if (!identity) return "";
     const locator = page.locator(chatGptAssistantTurnSelector(identity));
@@ -3184,6 +3199,7 @@ export class ChatGptBrowserWorker {
       const identity = chatGptNewTurnIdentity(
         observationBaseline.initialTurnIdentities,
         state.responseIdentities,
+        chatGptAssistantIdentityForUser(observationBaseline.acceptedUserIdentity),
       );
       if (progress
         && externalProgress
@@ -3242,6 +3258,7 @@ export class ChatGptBrowserWorker {
       baseline.initialTurnIdentities,
       binding.identity,
       state.responseIdentities,
+      chatGptAssistantIdentityForUser(baseline.acceptedUserIdentity),
     );
     const newUsers = state.userIdentities.filter(identity => !acceptedTurns.has(identity));
     if (newUsers.length > 0) {
