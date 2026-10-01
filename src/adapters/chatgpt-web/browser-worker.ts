@@ -5443,9 +5443,13 @@ export class ChatGptBrowserWorker {
       const checkpointStream = turn.captureLunaCheckpoint
         ? new ChatGptLunaCheckpointStream()
         : undefined;
+      let emittedAnswerChars = 0;
       const emitMarkdownDelta = (delta: string): void => {
         const visible = checkpointStream ? checkpointStream.push(delta) : delta;
-        if (visible) turn.onTextDelta(visible);
+        if (visible) {
+          emittedAnswerChars += visible.length;
+          turn.onTextDelta(visible);
+        }
       };
       const throwMarkdownConsistencyError = (error: unknown): never => {
         if (!(error instanceof ChatGptMarkdownConsistencyError)) throw error;
@@ -5662,7 +5666,10 @@ export class ChatGptBrowserWorker {
           );
         }
         const recoverSameConversation = async (): Promise<boolean> => {
-          if (!turn.prepareRecovery || sameConversationRecoveries > 0 || externalToolCallsInFlight) return false;
+          if (!turn.prepareRecovery
+            || sameConversationRecoveries > 0
+            || externalToolCallsInFlight
+            || emittedAnswerChars > 0) return false;
           sameConversationRecoveries += 1;
           let recoveryPrepared: (CompiledChatGptWebPrompt & { release: () => void }) | undefined;
           try {
@@ -5763,7 +5770,10 @@ export class ChatGptBrowserWorker {
           externalProgressLive,
         });
         if (quiescentStalled) {
-          if (turn.prepareRecovery && sameConversationRecoveries === 0 && !externalToolCallsInFlight) {
+          if (turn.prepareRecovery
+            && sameConversationRecoveries === 0
+            && !externalToolCallsInFlight
+            && emittedAnswerChars === 0) {
             try {
               if (await recoverSameConversation()) continue;
             } catch (error) {
