@@ -91,6 +91,42 @@ test("conversation turn identity survives ChatGPT DOM virtualization", () => {
   )).toThrow("2 new conversation turns");
 });
 
+test("conversation turn identity can prefer the assistant paired to an accepted user group", () => {
+  expect(chatGptNewTurnIdentity(
+    [],
+    ["group:assistant:activity-shell", "group:assistant:submitted"],
+    "group:assistant:submitted",
+  )).toBe("group:assistant:submitted");
+  expect(() => chatGptNewTurnIdentity(
+    [],
+    ["group:assistant:activity-shell", "group:assistant:submitted"],
+    "group:assistant:other",
+  )).toThrow("2 new conversation turns");
+});
+
+test("active generation proves Send before transient duplicate assistant nodes are disambiguated", () => {
+  expect(chatGptSubmissionEvidence({
+    initialTurnIdentities: ["group:user:old", "group:assistant:old"],
+    userIdentities: ["group:user:old"],
+    responseIdentities: [
+      "group:assistant:old",
+      "group:assistant:activity-shell",
+      "group:assistant:submitted",
+    ],
+    generationRunning: true,
+  })).toBe("generation_running");
+  expect(() => chatGptSubmissionEvidence({
+    initialTurnIdentities: ["group:user:old", "group:assistant:old"],
+    userIdentities: ["group:user:old"],
+    responseIdentities: [
+      "group:assistant:old",
+      "group:assistant:activity-shell",
+      "group:assistant:submitted",
+    ],
+    generationRunning: false,
+  })).toThrow("2 new conversation turns");
+});
+
 test("submission DOM tracks logical identities and retains virtualized history in its baseline", async () => {
   type Turn = { id: string; index: number; role: "user" | "assistant"; mounted: boolean };
   let turns: Turn[] = [
