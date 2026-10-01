@@ -294,6 +294,7 @@ export class ChatGptMarkdownBuffer {
     let highestCommittedIndex = -1;
     let sawPending = false;
     let previousSourceStart: number | undefined;
+    const semanticOccurrences = new Map<string, number>();
 
     for (const segment of segments) {
       if (segment.sourceStart !== undefined) {
@@ -304,7 +305,16 @@ export class ChatGptMarkdownBuffer {
         }
         previousSourceStart = segment.sourceStart;
       }
-      const committedIndex = this.committedIndex(segment, highestCommittedIndex);
+      const semanticIdentity = segment.sourceStart === undefined && segment.tag && segment.text.trim()
+        ? `${segment.tag}\0${segment.text}`
+        : undefined;
+      const semanticOccurrence = semanticIdentity
+        ? (semanticOccurrences.get(semanticIdentity) ?? 0) + 1
+        : undefined;
+      if (semanticIdentity && semanticOccurrence !== undefined) {
+        semanticOccurrences.set(semanticIdentity, semanticOccurrence);
+      }
+      const committedIndex = this.committedIndex(segment, semanticOccurrence);
       if (committedIndex !== undefined) {
         const committed = this.committed[committedIndex]!;
         if (sawPending || committedIndex < highestCommittedIndex || committed.text !== segment.text) {
@@ -347,7 +357,7 @@ export class ChatGptMarkdownBuffer {
 
   private committedIndex(
     segment: ChatGptMarkdownSegment,
-    afterIndex = -1,
+    semanticOccurrence?: number,
   ): number | undefined {
     const exact = this.committed.findIndex(committed => (
       segment.sourceStart !== undefined && committed.sourceStart !== undefined
@@ -362,17 +372,15 @@ export class ChatGptMarkdownBuffer {
     // Their exact DOM keys/ranges above remain valid, but a new empty block must
     // not be mistaken for an earlier committed one by the text-only match.
     if (!segment.text.trim()) return undefined;
-    // Text is only a fallback identity for DOM blocks that were re-keyed. Match the next
-    // still-unconsumed committed occurrence in response order instead of globally. Otherwise a
-    // later paragraph whose text is identical to an earlier committed paragraph aliases that
-    // earlier block and is falsely reported as a reorder/edit (#723).
-    return this.committed
+    // Text is only a fallback identity for DOM blocks that were re-keyed. Preserve the occurrence
+    // number seen in this snapshot so a missing earlier duplicate cannot silently alias a later
+    // committed copy and hide a streamed-block removal.
+    const semanticMatches = this.committed
       .map((committed, index) => ({ committed, index }))
-      .find(({ committed, index }) => (
-        index > afterIndex
-        && committed.tag === segment.tag
-        && committed.text === segment.text
-      ))?.index;
+      .filter(({ committed }) => committed.tag === segment.tag && committed.text === segment.text);
+    return semanticOccurrence === undefined
+      ? undefined
+      : semanticMatches[semanticOccurrence - 1]?.index;
   }
 
   private matchesLatestPending(segment: ChatGptMarkdownSegment): boolean {
