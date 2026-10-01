@@ -4651,7 +4651,12 @@ export class ChatGptBrowserWorker {
         } : {}),
       }));
       const generationBusyVisible = [root, ...root.querySelectorAll<HTMLElement>('[aria-busy="true"]')]
-        .some(candidate => candidate.getAttribute("aria-busy") === "true" && renderedInDom(candidate));
+        .some(candidate => candidate.getAttribute("aria-busy") === "true"
+          && renderedInDom(candidate)
+          && !candidate.closest(".chart-widget-container, [data-code-block-preview-pane]")
+          && (candidate === root
+            || candidate.matches('[data-conversation-role="assistant"], [data-message-author-role="assistant"]')
+            || candidate.closest('[data-streaming-response-status], [data-testid^="cot-v5"]') !== null));
       const stoppedThinkingVisible = (() => {
         // Only ChatGPT UI in the bound response may terminate the turn. A model quoting this
         // phrase in its answer or reasoning is ordinary content, not a stopped-thinking status.
