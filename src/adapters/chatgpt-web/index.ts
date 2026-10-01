@@ -50,6 +50,28 @@ import {
   retainedConversationResumeRequest,
 } from "./conversation-key";
 
+export function stalledTurnRecoveryRequest(parsed: CodexParsedRequest, now = Date.now()): CodexParsedRequest {
+  if (parsed._compactionRequest) throw new Error("A compaction turn cannot use ordinary stall recovery");
+  return {
+    ...parsed,
+    previousResponseId: undefined,
+    context: {
+      messages: [{
+        role: "user",
+        timestamp: now,
+        content: [
+          "Continue the in-progress Codex task from the exact state already present in this ChatGPT conversation.",
+          "The immediately preceding assistant turn stalled before it returned a final answer.",
+          "Do not restart the task and do not repeat any Codex Native tool call or mutation that already completed successfully in this conversation.",
+          "Use Codex Native only for genuinely unfinished required work, then return the complete final answer for the original user request.",
+        ].join(" "),
+      }],
+    },
+    _rawBody: undefined,
+    _replayPrefixLen: undefined,
+  };
+}
+
 function brokerSocketPath(provider: CodexProviderConfig): string {
   const configured = provider.chatgptWeb?.brokerSocketPath?.trim();
   return resolveBrokerEndpoint(configured || defaultBrokerEndpoint());
@@ -702,6 +724,20 @@ export function createChatGptWebAdapter(
           ),
           release: () => {},
         }),
+        ...(!parsed._compactionRequest && !captureLunaCheckpoint ? {
+          prepareRecovery: async () => {
+            const recoveryInput = stalledTurnRecoveryRequest(checkpointInput.parsed);
+            return {
+              ...compileChatGptWebPrompt(
+                recoveryInput,
+                turnCapabilities,
+                undefined,
+                compileOptionsFor(recoveryInput),
+              ),
+              release: () => {},
+            };
+          },
+        } : {}),
         abortSignal: browserAbort.signal,
         ...(parsed._compactionRequest ? { compaction: true } : {}),
         ...submissionLifecycle,
@@ -766,6 +802,9 @@ export function createChatGptWebAdapter(
       capabilities: turnCapabilities,
       prepare: () => prepareWith(checkpointInput.parsed),
       ...(resumeInput ? { prepareResume: () => prepareWith(resumeInput) } : {}),
+      ...(!parsed._compactionRequest && !captureLunaCheckpoint ? {
+        prepareRecovery: () => prepareWith(stalledTurnRecoveryRequest(checkpointInput.parsed)),
+      } : {}),
       ...(retainConversation ? { retainConversation: true, conversationKey } : {}),
       abortSignal: browserAbort.signal,
       ...(parsed._compactionRequest ? { compaction: true } : {}),

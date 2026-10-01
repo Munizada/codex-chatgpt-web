@@ -4203,6 +4203,31 @@ test("recent completed MCP activity keeps the exact-prompt assistant re-key fenc
   );
 });
 
+test("post-tool stalls recover in the same ChatGPT conversation without replaying the original task", () => {
+  const worker = readFileSync("src/adapters/chatgpt-web/browser-worker.ts", "utf8");
+  const adapter = readFileSync("src/adapters/chatgpt-web/index.ts", "utf8");
+
+  expect(worker).toContain("prepareRecovery?:");
+  expect(worker).toContain('"stall_recovery_send"');
+  expect(worker).toContain("same-conversation stall recovery");
+  expect(worker).toMatch(/attachPromptWithCompactionRetry\([\s\S]*recoveryPrompt[\s\S]*true,[\s\S]*mode\.thinkEnabled/);
+  expect(adapter).toContain("stalledTurnRecoveryRequest");
+  expect(adapter).toContain("Do not restart the task and do not repeat any Codex Native tool call or mutation that already completed successfully");
+  expect(adapter).toContain("prepareRecovery: () => prepareWith(stalledTurnRecoveryRequest(checkpointInput.parsed))");
+});
+
+test("assistant aria-busy participates in generation liveness and Answer now is only a stalled-turn fallback", () => {
+  const worker = readFileSync("src/adapters/chatgpt-web/browser-worker.ts", "utf8");
+  expect(worker).toContain("generationBusyVisible");
+  expect(worker).toContain("querySelectorAll<HTMLElement>('[aria-busy=\"true\"]')");
+  expect(worker).toContain("stopVisible || snapshot.generationBusyVisible || answerNowVisible");
+  expect(worker).toContain("/^(?:Answer now|Responder agora)$/i");
+  const stall = worker.indexOf("if (runningStalled)");
+  const answerNow = worker.indexOf('answerNowControl.press("Enter"', stall);
+  expect(stall).toBeGreaterThan(0);
+  expect(answerNow).toBeGreaterThan(stall);
+});
+
 test("the daemon prefers the browser helper that shipped beside its own entrypoint", () => {
   const client = readFileSync("src/adapters/chatgpt-web/launcher-helper-client.ts", "utf8");
   const helper = readFileSync("src/adapters/chatgpt-web/browser-helper-main.ts", "utf8");
