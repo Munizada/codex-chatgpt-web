@@ -1939,6 +1939,31 @@ describe("ChatGPT outer-native harness v4", () => {
     });
   });
 
+  test("repeated semantic blocks fail closed when an earlier occurrence disappears", () => {
+    const buffer = new ChatGptMarkdownBuffer(markdown => markdown, 0);
+    const segment = (key: string, text: string) => ({
+      key, tag: "p", html: `<p>${text}</p>`, text, streamable: true,
+    });
+    const complete = [
+      segment("0:p", "First"),
+      segment("1:p", "Same"),
+      segment("2:p", "Middle"),
+      segment("3:p", "Same"),
+    ];
+    expect(buffer.observe(complete, 0)).toBe("First\n\nSame\n\nMiddle\n\nSame");
+
+    // Simulate a renderer re-key while the first repeated occurrence disappears. The remaining
+    // later copy must not be relabelled as the missing first copy or accepted as a valid snapshot.
+    const missingFirstCopy = [
+      segment("r0:p", "First"),
+      segment("r2:p", "Middle"),
+      segment("r3:p", "Same"),
+    ];
+    expect(buffer.observe(missingFirstCopy, 1)).toBe("");
+    expect(buffer.currentSnapshotIsConsistent()).toBeFalse();
+    expect(() => buffer.finish()).toThrow("changed a completed text block");
+  });
+
   test("fails closed when a DOM snapshot reverses ChatGPT source order", () => {
     const buffer = new ChatGptMarkdownBuffer(markdown => markdown, 0);
     const first = {

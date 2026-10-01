@@ -1773,6 +1773,19 @@ export function chatGptExternalProgressSuppressesDomHealth(
     && age < CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS;
 }
 
+/**
+ * An unresolved tool call may veto DOM completion only while that MCP activity is still fresh.
+ * Otherwise a lost result frame could leave activeToolCalls > 0 forever and defeat the stale-
+ * progress ceiling that intentionally returns terminal authority to the browser DOM.
+ */
+export function chatGptExternalToolCallsVetoCompletion(
+  snapshot: ChatGptExternalTurnProgressSnapshot | undefined,
+  now: number,
+): boolean {
+  return chatGptExternalToolCallsAreInFlight(snapshot)
+    && chatGptExternalProgressSuppressesDomHealth(snapshot, now);
+}
+
 export interface ChatGptVisibleTraceBlock {
   kind: "answer" | "commentary" | "status";
   text: string;
@@ -3892,11 +3905,15 @@ export class ChatGptBrowserWorker {
         );
         await externalProgress.acknowledgeToolBatch(externalProgressSnapshot.lastToolBatchRevision);
       }
+      const externalProgressObservedAt = Date.now();
       const externalProgressLive = chatGptExternalProgressSuppressesDomHealth(
         externalProgressSnapshot,
-        Date.now(),
+        externalProgressObservedAt,
       );
-      const externalToolCallsInFlight = chatGptExternalToolCallsAreInFlight(externalProgressSnapshot);
+      const externalToolCallsInFlight = chatGptExternalToolCallsVetoCompletion(
+        externalProgressSnapshot,
+        externalProgressObservedAt,
+      );
       if (!snapshot.responsePresent && externalProgressLive) {
         // Proven MCP activity outranks a momentarily unavailable staging DOM, exactly as it does
         // in the main turn loop.
@@ -5489,7 +5506,7 @@ export class ChatGptBrowserWorker {
                 submissionBaseline,
                 responseTurn,
                 turn.abortSignal,
-                chatGptExternalToolCallsAreInFlight(rebindProgressSnapshot),
+                chatGptExternalToolCallsVetoCompletion(rebindProgressSnapshot, Date.now()),
               ),
             );
             if (rebound.identity !== responseTurn.identity) {
@@ -5542,11 +5559,15 @@ export class ChatGptBrowserWorker {
           );
           await turn.externalProgress.acknowledgeToolBatch(externalProgressSnapshot.lastToolBatchRevision);
         }
+        const externalProgressObservedAt = Date.now();
         const externalProgressLive = chatGptExternalProgressSuppressesDomHealth(
           externalProgressSnapshot,
-          Date.now(),
+          externalProgressObservedAt,
         );
-        const externalToolCallsInFlight = chatGptExternalToolCallsAreInFlight(externalProgressSnapshot);
+        const externalToolCallsInFlight = chatGptExternalToolCallsVetoCompletion(
+          externalProgressSnapshot,
+          externalProgressObservedAt,
+        );
         if (!snapshot.responsePresent && externalProgressLive) {
           // Current-turn MCP activity proves that ChatGPT is still executing even if its renderer
           // temporarily cannot expose the response subtree. DOM remains authoritative for text and
