@@ -103,6 +103,7 @@ test("release installers resolve checksummed native launcher assets", () => {
   assert.match(windowsInstaller, /-ArgumentList "\/S", "\/currentuser"/);
   const packageSmoke = fs.readFileSync(path.join(launcherRoot, "scripts", "smoke-package.cjs"), "utf8");
   assert.match(packageSmoke, /run\(installer, \["\/S", "\/currentuser"\]/);
+  assert.match(packageSmoke, /process\.platform === "win32"[\s\S]*timeout: 120_000/);
   assert.match(packageSmoke, /reg\.exe[\s\S]*InstallLocation/);
 });
 

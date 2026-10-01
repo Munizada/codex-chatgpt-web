@@ -109,7 +109,13 @@ try {
   }
 
   if (!fs.existsSync(executable)) throw new Error(`Packaged launcher executable is missing: ${executable}`);
-  run(command, args, { env });
+  // A freshly installed Windows executable can spend substantially longer on its first launch
+  // while the hosted runner scans/signature-checks the packaged app. Keep the smoke bounded, but
+  // give that first boot the same 120s budget already allowed to the NSIS installation itself.
+  run(command, args, {
+    env,
+    ...(process.platform === "win32" ? { timeout: 120_000 } : {}),
+  });
   if (!fs.existsSync(markerPath)) throw new Error("Packaged launcher did not write its readiness marker");
   const marker = JSON.parse(fs.readFileSync(markerPath, "utf8"));
   if (marker.ok !== true
