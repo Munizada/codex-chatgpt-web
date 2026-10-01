@@ -4183,6 +4183,26 @@ test("stale unresolved MCP calls stop vetoing a completed browser turn", () => {
   }, staleAt + 500)).toBeTrue();
 });
 
+test("recent completed MCP activity keeps the exact-prompt assistant re-key fence open", () => {
+  const completedTool = {
+    revision: 2,
+    lastToolBatchRevision: 1,
+    activeToolCalls: 0,
+    lastProgressAt: 1_000,
+  };
+
+  // The final tool result is still proven activity from this broker turn. React can re-key the
+  // finished exchange a few milliseconds later, after activeToolCalls has already returned to 0.
+  expect(chatGptExternalToolCallsVetoCompletion(completedTool, 1_100)).toBeFalse();
+  expect(chatGptExternalProgressSuppressesDomHealth(completedTool, 1_100)).toBeTrue();
+
+  const worker = readFileSync("src/adapters/chatgpt-web/browser-worker.ts", "utf8");
+  const runBrowserTurn = worker.slice(worker.indexOf("private async runBrowserTurn("));
+  expect(runBrowserTurn).toContain(
+    "chatGptExternalProgressSuppressesDomHealth(rebindProgressSnapshot, Date.now())",
+  );
+});
+
 test("the daemon prefers the browser helper that shipped beside its own entrypoint", () => {
   const client = readFileSync("src/adapters/chatgpt-web/launcher-helper-client.ts", "utf8");
   const helper = readFileSync("src/adapters/chatgpt-web/browser-helper-main.ts", "utf8");

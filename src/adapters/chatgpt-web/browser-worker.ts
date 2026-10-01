@@ -3315,8 +3315,8 @@ export class ChatGptBrowserWorker {
           }, baseline.submittedText), signal));
         }
         if (matches && acceptedIdentityRekey) baseline.acceptedUserIdentity = user;
-        // The accepted user identity normally owns the turn. A live tool call from this exact
-        // broker trace additionally permits a renderer re-key only when the old user group is
+        // The accepted user identity normally owns the turn. Recent proven tool activity from this
+        // exact broker trace additionally permits a renderer re-key only when the old user group is
         // gone and the replacement contains the entire submitted prompt exactly.
       }
       if (!matches) throw new Error("ChatGPT opened another user turn while the bound assistant response was detached");
@@ -5506,7 +5506,7 @@ export class ChatGptBrowserWorker {
                 submissionBaseline,
                 responseTurn,
                 turn.abortSignal,
-                chatGptExternalToolCallsVetoCompletion(rebindProgressSnapshot, Date.now()),
+                chatGptExternalProgressSuppressesDomHealth(rebindProgressSnapshot, Date.now()),
               ),
             );
             if (rebound.identity !== responseTurn.identity) {
