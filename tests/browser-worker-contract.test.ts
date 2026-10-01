@@ -14,7 +14,7 @@ import { CHATGPT_CONNECTOR_NAME, DEV_CHATGPT_CONNECTOR_NAME, defaultChromeExecut
 import { CHATGPT_SEND_BUTTON_SELECTOR, parseChatGptEffortSliderState } from "../src/chatgpt-session";
 import { ChatGptExternalTurnProgress, chatGptExternalToolCallsAreInFlight } from "../src/adapters/chatgpt-web/turn-progress";
 import type { CodexProviderConfig } from "../src/types";
-import { compileChatGptWebPrompt, formatChatGptWebMultipartCommit, formatChatGptWebMultipartStage } from "../src/adapters/chatgpt-web/prompt";
+import { compileChatGptWebPrompt, formatChatGptWebMultipartAcknowledgementRecovery, formatChatGptWebMultipartCommit, formatChatGptWebMultipartStage } from "../src/adapters/chatgpt-web/prompt";
 import { estimateCompiledChatGptWebInputTokens } from "../src/adapters/chatgpt-web/input-tokens";
 import { estimateTokens } from "../src/lib/token-estimate";
 import { chatGptHtmlToMarkdown } from "../src/adapters/chatgpt-web/markdown";
@@ -4201,6 +4201,37 @@ test("recent completed MCP activity keeps the exact-prompt assistant re-key fenc
   expect(runBrowserTurn).toContain(
     "chatGptExternalProgressSuppressesDomHealth(rebindProgressSnapshot, Date.now())",
   );
+});
+
+test("multipart acknowledgement recovery requests only the missing receipt and never repeats the staged payload", () => {
+  const transactionId = "ctx_0123456789abcdef0123456789abcdef";
+  const payload = JSON.stringify({ secret_marker: "DO_NOT_REPEAT_STAGE_PAYLOAD" });
+  const stage = formatChatGptWebMultipartStage(payload, transactionId, 3, 6);
+  const recovery = formatChatGptWebMultipartAcknowledgementRecovery(stage);
+
+  expect(recovery).toContain(stage.acknowledgement);
+  expect(recovery).toContain("already submitted and is already present in this conversation");
+  expect(recovery).toContain("Do not execute, summarize, reinterpret, or repeat that payload");
+  expect(recovery).not.toContain(payload);
+  expect(recovery).not.toContain("DO_NOT_REPEAT_STAGE_PAYLOAD");
+});
+
+test("a timed-out multipart acknowledgement gets one in-place receipt recovery before the staged payload can be retried", () => {
+  const worker = readFileSync("src/adapters/chatgpt-web/browser-worker.ts", "utf8");
+  const multipart = worker.slice(worker.indexOf("if (prepared.multipart && multipartStages"));
+  const timeoutCatch = multipart.indexOf("acknowledgementTimedOut");
+  const recoveryFormat = multipart.indexOf("formatChatGptWebMultipartAcknowledgementRecovery(stage)", timeoutCatch);
+  const recoverySend = multipart.indexOf("ack_recovery_send", recoveryFormat);
+  const acknowledgedCallback = multipart.indexOf("onMultipartStageAcknowledged", recoverySend);
+
+  expect(timeoutCatch).toBeGreaterThan(0);
+  expect(recoveryFormat).toBeGreaterThan(timeoutCatch);
+  expect(recoverySend).toBeGreaterThan(recoveryFormat);
+  expect(acknowledgedCallback).toBeGreaterThan(recoverySend);
+  expect(multipart).toContain("recovering the receipt in-place without resending the payload");
+  expect(multipart).toContain("ack_recovery_acknowledgement");
+  // The acknowledgement observer must fully unwind after its timeout before recovery mutates the composer.
+  expect(multipart).toMatch(/multipartStageAcknowledgement,[\s\S]*chatGptSuspensionClock,[\s\S]*true,[\s\S]*\);/);
 });
 
 test("post-tool stalls recover in the same ChatGPT conversation without replaying the original task", () => {

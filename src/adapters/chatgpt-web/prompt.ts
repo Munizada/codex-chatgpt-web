@@ -112,6 +112,19 @@ export function formatChatGptWebMultipartStage(
   return { text, acknowledgement, sha256 };
 }
 
+export function formatChatGptWebMultipartAcknowledgementRecovery(
+  stage: ChatGptWebMultipartStage,
+): string {
+  return [
+    "<codex_multipart_ack_recovery>",
+    "The immediately preceding multipart context part was already submitted and is already present in this conversation.",
+    "Do not execute, summarize, reinterpret, or repeat that payload. Do not call tools or use web search.",
+    "This message only recovers its transaction receipt after the previous acknowledgement response stalled.",
+    `Reply with exactly ${stage.acknowledgement} and nothing else.`,
+    "</codex_multipart_ack_recovery>",
+  ].join("\n");
+}
+
 export function formatChatGptWebMultipartCommit(
   multipart: ChatGptWebMultipartPrompt,
   transactionId: string,

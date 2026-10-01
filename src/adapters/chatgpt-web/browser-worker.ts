@@ -39,6 +39,7 @@ import {
 } from "./input-tokens";
 import {
   CHATGPT_MAX_INPUT_IMAGES,
+  formatChatGptWebMultipartAcknowledgementRecovery,
   formatChatGptWebMultipartCommit,
   formatChatGptWebMultipartStage,
   isChatGptWebMultipartPartCount,
@@ -5247,44 +5248,148 @@ export class ChatGptBrowserWorker {
           console.info(
             `[chatgpt-web] browser turn ${turn.traceId} multipart part ${index + 1}/${prepared.multipart.parts.length} submission accepted evidence=${evidence}`,
           );
-          await this.runStage(
-            turn.traceId,
-            `multipart_stage_${index + 1}_acknowledgement`,
-            browserStageTimeouts.multipartStageAcknowledgement,
-            async (stageSignal) => {
-              const acknowledgementSignal = turn.abortSignal
-                ? AbortSignal.any([stageSignal, turn.abortSignal])
-                : stageSignal;
-              const responseTurn = await this.waitForNewAssistantTurn(
+          const acknowledgementStage = `multipart_stage_${index + 1}_acknowledgement`;
+          const awaitStageAcknowledgement = async (
+            stageName: string,
+            initialBaseline: ChatGptSubmissionBaseline,
+          ): Promise<void> => {
+            let acknowledgementBaseline = initialBaseline;
+            await this.runStage(
+              turn.traceId,
+              stageName,
+              browserStageTimeouts.multipartStageAcknowledgement,
+              async (stageSignal) => {
+                const acknowledgementSignal = turn.abortSignal
+                  ? AbortSignal.any([stageSignal, turn.abortSignal])
+                  : stageSignal;
+                const responseTurn = await this.waitForNewAssistantTurn(
+                  page,
+                  acknowledgementBaseline,
+                  deadline,
+                  acknowledgementSignal,
+                  // A part still being ingested has produced no MCP activity, so there is no progress
+                  // to consult here; the dedicated acknowledgement stage owns this wait.
+                  undefined,
+                  CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS,
+                  undefined,
+                  launcherObservationRecovery
+                    ? async (...args) => {
+                      const recovered = await recoverAssistantObservation(...args);
+                      acknowledgementBaseline = recovered.baseline;
+                      return recovered;
+                    }
+                    : undefined,
+                );
+                await this.waitForMultipartAcknowledgement(
+                  page,
+                  responseTurn,
+                  acknowledgementBaseline,
+                  stage,
+                  deadline,
+                  acknowledgementSignal,
+                  turn.externalProgress,
+                );
+              },
+              chatGptSuspensionClock,
+              // A timeout aborts the response observer. Wait for it to unwind before touching the
+              // same composer, otherwise the recovery send can race a detached old observation.
+              true,
+            );
+          };
+          try {
+            await awaitStageAcknowledgement(acknowledgementStage, stageBaseline);
+          } catch (error) {
+            const acknowledgementTimedOut = error instanceof Error
+              && error.message === `ChatGPT browser stage timed out: ${acknowledgementStage}`;
+            if (!acknowledgementTimedOut || turn.abortSignal?.aborted) throw error;
+
+            // Send was already semantically accepted, so never replay the large staged payload.
+            // Recover only the missing receipt inside the same ChatGPT conversation. Earlier
+            // acknowledged parts and this accepted user message remain the transaction authority.
+            console.warn(
+              `[chatgpt-web] browser turn ${turn.traceId} multipart part ${index + 1}/${prepared.multipart.parts.length}`
+              + " acknowledgement timed out; recovering the receipt in-place without resending the payload",
+            );
+            await diagnostics.capture(page, `multipart-stage-${index + 1}-ack-timeout`, error);
+
+            if (launcherSurfaceId) {
+              await rebindLauncherPage(
+                MAX_CHATGPT_BROWSER_PAGE_REBINDS + 2 + index,
+                new Error(`Multipart part ${index + 1} acknowledgement timed out`),
+                turn.abortSignal,
+              );
+              await diagnostics.capture(page, `multipart-stage-${index + 1}-ack-page-rebound`);
+            }
+
+            // Staging is inert transport. If ChatGPT is still spinning on the already-stored part,
+            // stopping that generation cannot discard task work; it only clears the stuck receipt.
+            const stop = page.locator(CHATGPT_STOP_BUTTON_SELECTOR).last();
+            if (await stop.isVisible().catch(() => false)) {
+              await stop.press("Enter", {
+                noWaitAfter: true,
+                signal: turn.abortSignal,
+                timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
+              });
+              await stop.waitFor({ state: "hidden", timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS }).catch(() => {});
+            }
+
+            mode = await this.runStage(
+              turn.traceId,
+              `multipart_stage_${index + 1}_ack_recovery_effort_selection`,
+              browserStageTimeouts.effortSelection,
+              selectStagingMode,
+            );
+            const recoveryPrompt = formatChatGptWebMultipartAcknowledgementRecovery(stage);
+            let recoveryBaseline = await this.captureSubmissionBaseline(page, recoveryPrompt);
+            await this.runStage(
+              turn.traceId,
+              `multipart_stage_${index + 1}_ack_recovery_attachment`,
+              browserStageTimeouts.promptAttachment,
+              (stageSignal) => this.attachPrompt(
                 page,
-                stageBaseline,
-                deadline,
-                acknowledgementSignal,
-                // A part still being ingested has produced no MCP activity, so there is no progress
-                // to consult here; the dedicated acknowledgement stage owns this wait.
+                recoveryPrompt,
+                false,
+                checkpoint => diagnostics.capture(page, `multipart-${index + 1}-ack-recovery-${checkpoint}`),
+                turn.abortSignal ? AbortSignal.any([stageSignal, turn.abortSignal]) : stageSignal,
+              ),
+              chatGptSuspensionClock,
+              true,
+            );
+            const recordRecoveryUsage = await usageSubmission();
+            const recoveryEvidence = await this.runStage(
+              turn.traceId,
+              `multipart_stage_${index + 1}_ack_recovery_send`,
+              browserStageTimeouts.multipartStageSend,
+              (stageSignal) => this.sendAttachedPrompt(
+                page,
+                recoveryBaseline,
+                checkpoint => diagnostics.capture(page, `multipart-${index + 1}-ack-recovery-${checkpoint}`),
+                turn.abortSignal ? AbortSignal.any([stageSignal, turn.abortSignal]) : stageSignal,
                 undefined,
-                CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS,
+                { onSubmitted: recordRecoveryUsage, onSendActivated: async () => {
+                  await this.assertSelectedEffort(page, mode);
+                  submissionRejection.begin(page);
+                } },
                 undefined,
                 launcherObservationRecovery
                   ? async (...args) => {
-                    const recovered = await recoverAssistantObservation(...args);
-                    stageBaseline = recovered.baseline;
+                    const recovered = await recoverSubmissionObservation(...args);
+                    recoveryBaseline = recovered.baseline;
                     return recovered;
                   }
                   : undefined,
-              );
-              await this.waitForMultipartAcknowledgement(
-                page,
-                responseTurn,
-                stageBaseline,
-                stage,
-                deadline,
-                acknowledgementSignal,
-                turn.externalProgress,
-              );
-            },
-            chatGptSuspensionClock,
-          );
+              ),
+            );
+            console.warn(
+              `[chatgpt-web] browser turn ${turn.traceId} multipart part ${index + 1}/${prepared.multipart.parts.length}`
+              + ` receipt recovery submitted evidence=${recoveryEvidence}`,
+            );
+            await awaitStageAcknowledgement(
+              `multipart_stage_${index + 1}_ack_recovery_acknowledgement`,
+              recoveryBaseline,
+            );
+            await diagnostics.capture(page, `multipart-stage-${index + 1}-ack-recovered`);
+          }
           const stageRejection = await submissionRejection.failure();
           if (stageRejection) throw stageRejection;
           await diagnostics.capture(page, `multipart-stage-${index + 1}-acknowledged`);
