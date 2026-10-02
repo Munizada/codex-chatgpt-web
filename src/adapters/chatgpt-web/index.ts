@@ -61,9 +61,11 @@ export function stalledTurnRecoveryRequest(parsed: CodexParsedRequest, now = Dat
         timestamp: now,
         content: [
           "Continue the in-progress Codex task from the exact state already present in this ChatGPT conversation.",
-          "The immediately preceding assistant turn stalled before it returned a final answer.",
+          "The immediately preceding assistant turn stalled before it cleanly completed its final answer.",
           "Do not restart the task and do not repeat any Codex Native tool call or mutation that already completed successfully in this conversation.",
-          "Use Codex Native only for genuinely unfinished required work, then return the complete final answer for the original user request.",
+          "If the preceding assistant turn already emitted any user-facing final-answer text, do not repeat that text; continue from exactly where it stopped.",
+          "If no final-answer text was emitted, return the complete final answer for the original user request.",
+          "Use Codex Native only for genuinely unfinished required work.",
         ].join(" "),
       }],
     },
