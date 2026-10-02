@@ -75,7 +75,8 @@ test("fork-only recovery paths remain wired on top of the 6.1.4 browser worker",
   expect(worker).toContain("generationBusyVisible");
   expect(worker).toContain("answerNowControl.press");
   expect(worker).toContain("same-conversation stall recovery");
-  expect(worker).toContain("emittedAnswerChars > 0");
+  expect(worker).toContain("quiescent recovery decision");
+  expect(worker).not.toContain("|| emittedAnswerChars > 0) return false");
   expect(worker).toContain("ack_recovery_acknowledgement");
   expect(worker).toContain('error.code === "multipart_protocol_violation"');
   expect(worker).toContain(
@@ -83,5 +84,6 @@ test("fork-only recovery paths remain wired on top of the 6.1.4 browser worker",
   );
   expect(worker).toContain("progressClock?: Pick<ChatGptTurnProgressReader");
   expect(adapter).toContain("stalledTurnRecoveryRequest");
+  expect(adapter).toContain("do not repeat that text; continue from exactly where it stopped");
   expect(adapter).toContain("prepareRecovery: () => prepareWith");
 });
