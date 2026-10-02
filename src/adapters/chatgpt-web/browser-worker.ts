@@ -142,7 +142,9 @@ export const CHATGPT_COMPLETION_ACTION_GRACE_MS = 60_000;
 // MCP activity both remain unchanged for this long, rebind once and then fail closed rather than
 // keeping the outer Codex turn alive forever through heartbeats.
 export const CHATGPT_RUNNING_STALL_GRACE_MS = 10 * 60_000;
-export const CHATGPT_QUIESCENT_STALL_GRACE_MS = 10 * 60_000;
+// A response shell that is present but fully idle after MCP progress has gone stale is no longer
+// doing useful work. Recover it promptly instead of waiting another ten minutes.
+export const CHATGPT_QUIESCENT_STALL_GRACE_MS = 2 * 60_000;
 export const CHATGPT_COMPLETION_SETTLE_MS = 2_000;
 export const CHATGPT_TOOL_CONFIRMATION_TIMEOUT_MS = 60_000;
 export const MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS = 3;
@@ -5856,8 +5858,7 @@ export class ChatGptBrowserWorker {
         const recoverSameConversation = async (): Promise<boolean> => {
           if (!turn.prepareRecovery
             || sameConversationRecoveries > 0
-            || externalToolCallsInFlight
-            || emittedAnswerChars > 0) return false;
+            || externalToolCallsInFlight) return false;
           sameConversationRecoveries += 1;
           let recoveryPrepared: (CompiledChatGptWebPrompt & { release: () => void }) | undefined;
           try {
@@ -5957,10 +5958,16 @@ export class ChatGptBrowserWorker {
           externalProgressLive,
         });
         if (quiescentStalled) {
+          console.warn(
+            `[chatgpt-web] browser turn ${turn.traceId} quiescent recovery decision`
+            + ` prepareRecovery=${Boolean(turn.prepareRecovery)}`
+            + ` sameConversationRecoveries=${sameConversationRecoveries}`
+            + ` externalToolCallsInFlight=${externalToolCallsInFlight}`
+            + ` emittedAnswerChars=${emittedAnswerChars}`,
+          );
           if (turn.prepareRecovery
             && sameConversationRecoveries === 0
-            && !externalToolCallsInFlight
-            && emittedAnswerChars === 0) {
+            && !externalToolCallsInFlight) {
             try {
               if (await recoverSameConversation()) continue;
             } catch (error) {
