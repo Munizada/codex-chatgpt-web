@@ -4393,15 +4393,21 @@ test("the bundled helper is adopted only for the packaged runtime layout", () =>
   expect(heartbeat).toBeLessThan(tryStart);
 });
 
-test("a staged Bigger Context part gets an acknowledgement window sized to its payload", () => {
-  // A staged part is much larger than an ordinary prompt and ChatGPT reads it before answering.
+test("a staged Bigger Context part keeps a large send budget but recovers stalled receipts promptly", () => {
+  // A staged part is much larger than an ordinary prompt and ChatGPT may need the larger DOM/send
+  // headroom while accepting it.
   expect(CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS).toBeGreaterThan(CHATGPT_RESPONSE_DOM_GRACE_MS);
-
-  // No MCP activity exists while an inert part is being ingested, so the response and send budgets
-  // bound the same exchange.
   expect(CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS).toBe(browserStageTimeouts.multipartStageSend);
-  expect(browserStageTimeouts.multipartStageAcknowledgement).toBe(CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS);
 
+  // Once the user message is accepted, acknowledgement is only a transaction receipt. It should
+  // recover much sooner than the large-payload send/DOM budget, and the tiny recovery receipt gets
+  // an even smaller bounded window.
+  expect(browserStageTimeouts.multipartStageAcknowledgement).toBe(45_000);
+  expect(browserStageTimeouts.multipartStageRecoveryAcknowledgement).toBe(20_000);
+  expect(browserStageTimeouts.multipartStageRecoveryAcknowledgement)
+    .toBeLessThan(browserStageTimeouts.multipartStageAcknowledgement);
+  expect(browserStageTimeouts.multipartStageAcknowledgement)
+    .toBeLessThan(browserStageTimeouts.multipartStageSend);
 });
 
 test("the suspension clock charges only tick gaps that mean the process was frozen", () => {
