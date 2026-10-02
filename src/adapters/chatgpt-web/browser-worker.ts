@@ -5390,7 +5390,7 @@ export class ChatGptBrowserWorker {
           const awaitStageAcknowledgement = async (
             stageName: string,
             initialBaseline: ChatGptSubmissionBaseline,
-            timeoutMs = browserStageTimeouts.multipartStageAcknowledgement,
+            timeoutMs: number = browserStageTimeouts.multipartStageAcknowledgement,
           ): Promise<void> => {
             let acknowledgementBaseline = initialBaseline;
             await this.runStage(
