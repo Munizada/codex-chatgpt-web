@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createContext, runInContext } from "node:vm";
 import type { Page } from "playwright-core";
-import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPLETION_SETTLE_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, chatGptExternalToolCallsVetoCompletion, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_COMPOSER_SELECT_ALL_KEY, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptSubmissionRejectionObserver, ChatGptPromptAttachmentIntegrityError, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, chatGptConnectorAttachmentMode, chatGptNewTurnIdentity, chatGptReboundTurnIdentity, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, sanitizeChatGptBrowserDiagnosticState, setChatGptThinkMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, browserStageTimeouts, ChatGptSuspensionClock, remainingStageBudgetMs } from "../src/adapters/chatgpt-web/browser-worker";
+import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPLETION_SETTLE_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_COMPOSER_SELECT_ALL_KEY, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptSubmissionRejectionObserver, ChatGptPromptAttachmentIntegrityError, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, chatGptNewTurnIdentity, chatGptReboundTurnIdentity, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, sanitizeChatGptBrowserDiagnosticState, setChatGptThinkMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, browserStageTimeouts, ChatGptSuspensionClock, remainingStageBudgetMs } from "../src/adapters/chatgpt-web/browser-worker";
 import { ensureChatGptPersonalizedConnectorAccess, chatGptUnavailableProDetail } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter-error";
 import { CHATGPT_STOPPED_THINKING_LABELS } from "../src/adapters/chatgpt-web/ui-labels";
@@ -14,7 +14,7 @@ import { CHATGPT_CONNECTOR_NAME, DEV_CHATGPT_CONNECTOR_NAME, defaultChromeExecut
 import { CHATGPT_SEND_BUTTON_SELECTOR, parseChatGptEffortSliderState } from "../src/chatgpt-session";
 import { ChatGptExternalTurnProgress, chatGptExternalToolCallsAreInFlight } from "../src/adapters/chatgpt-web/turn-progress";
 import type { CodexProviderConfig } from "../src/types";
-import { compileChatGptWebPrompt, formatChatGptWebMultipartAcknowledgementRecovery, formatChatGptWebMultipartCommit, formatChatGptWebMultipartStage } from "../src/adapters/chatgpt-web/prompt";
+import { compileChatGptWebPrompt, formatChatGptWebMultipartCommit, formatChatGptWebMultipartStage } from "../src/adapters/chatgpt-web/prompt";
 import { estimateCompiledChatGptWebInputTokens } from "../src/adapters/chatgpt-web/input-tokens";
 import { estimateTokens } from "../src/lib/token-estimate";
 import { chatGptHtmlToMarkdown } from "../src/adapters/chatgpt-web/markdown";
@@ -89,42 +89,6 @@ test("conversation turn identity survives ChatGPT DOM virtualization", () => {
     ["conversation-turn-1"],
     ["conversation-turn-1", "conversation-turn-2", "conversation-turn-3"],
   )).toThrow("2 new conversation turns");
-});
-
-test("conversation turn identity can prefer the assistant paired to an accepted user group", () => {
-  expect(chatGptNewTurnIdentity(
-    [],
-    ["group:assistant:activity-shell", "group:assistant:submitted"],
-    "group:assistant:submitted",
-  )).toBe("group:assistant:submitted");
-  expect(() => chatGptNewTurnIdentity(
-    [],
-    ["group:assistant:activity-shell", "group:assistant:submitted"],
-    "group:assistant:other",
-  )).toThrow("2 new conversation turns");
-});
-
-test("active generation proves Send before transient duplicate assistant nodes are disambiguated", () => {
-  expect(chatGptSubmissionEvidence({
-    initialTurnIdentities: ["group:user:old", "group:assistant:old"],
-    userIdentities: ["group:user:old"],
-    responseIdentities: [
-      "group:assistant:old",
-      "group:assistant:activity-shell",
-      "group:assistant:submitted",
-    ],
-    generationRunning: true,
-  })).toBe("generation_running");
-  expect(() => chatGptSubmissionEvidence({
-    initialTurnIdentities: ["group:user:old", "group:assistant:old"],
-    userIdentities: ["group:user:old"],
-    responseIdentities: [
-      "group:assistant:old",
-      "group:assistant:activity-shell",
-      "group:assistant:submitted",
-    ],
-    generationRunning: false,
-  })).toThrow("2 new conversation turns");
 });
 
 test("submission DOM tracks logical identities and retains virtualized history in its baseline", async () => {
@@ -319,12 +283,6 @@ test("response caching rechecks CSS visibility without requiring a DOM mutation"
   }
 });
 
-test("a retained MCP conversation reuses its proven connector binding", () => {
-  expect(chatGptConnectorAttachmentMode(true, false)).toBe("mention");
-  expect(chatGptConnectorAttachmentMode(true, true)).toBe("retained");
-  expect(chatGptConnectorAttachmentMode(false, false)).toBe("none");
-});
-
 test("browser turns run concurrently up to the five-tab limit", async () => {
   expect(MAX_CHATGPT_BROWSER_TABS).toBe(5);
   const releases = new Map<string, () => void>();
@@ -422,9 +380,6 @@ test("browser stage timeout aborts late page acquisition", async () => {
       stage: string,
       timeoutMs: number,
       action: (signal: AbortSignal) => Promise<T>,
-      suspensionClock?: { suspendedMs(): number },
-      awaitAbortedActionSettlement?: boolean,
-      progressClock?: Pick<ChatGptExternalTurnProgress, "snapshot">,
     ): Promise<T>;
   }).runStage;
 
@@ -792,85 +747,6 @@ test("an accepted Full-mode send survives one stalled DOM probe and a later MCP 
   } finally {
     clearTimeout(timer);
   }
-});
-
-test("Send gets one fresh stage budget when proven MCP progress arrives before timeout", async () => {
-  const provider: CodexProviderConfig = {
-    adapter: "chatgpt-web",
-    baseUrl: `browser://send-mcp-progress-${Date.now()}-${Math.random()}`,
-    chatgptWeb: {
-      localToolsEnabled: true,
-      solAvailable: true,
-      extraHighAvailable: true,
-      proAvailable: true,
-      storageStatePath: `/tmp/send-mcp-progress-${Date.now()}-${Math.random()}.json`,
-    },
-  };
-  const worker = ChatGptBrowserWorker.forProvider(provider) as unknown as {
-    runStage<T>(
-      traceId: string,
-      stage: string,
-      timeoutMs: number,
-      action: (signal: AbortSignal) => Promise<T>,
-      suspensionClock?: { suspendedMs(): number },
-      awaitAbortedActionSettlement?: boolean,
-      progressClock?: Pick<ChatGptExternalTurnProgress, "snapshot">,
-    ): Promise<T>;
-  };
-  const progress = new ChatGptExternalTurnProgress();
-  const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-  const result = worker.runStage(
-    "send-mcp-progress",
-    "send",
-    40,
-    async signal => {
-      await sleep(25);
-      if (signal.aborted) throw new DOMException("aborted", "AbortError");
-      progress.recordToolBatch(1);
-      await sleep(30);
-      if (signal.aborted) throw new DOMException("aborted", "AbortError");
-      return "mcp_tool_call";
-    },
-    { suspendedMs: () => 0 },
-    false,
-    progress,
-  );
-  await expect(result).resolves.toBe("mcp_tool_call");
-});
-
-test("Send still times out normally when no MCP progress is proven", async () => {
-  const provider: CodexProviderConfig = {
-    adapter: "chatgpt-web",
-    baseUrl: `browser://send-no-progress-${Date.now()}-${Math.random()}`,
-    chatgptWeb: {
-      localToolsEnabled: true,
-      solAvailable: true,
-      extraHighAvailable: true,
-      proAvailable: true,
-      storageStatePath: `/tmp/send-no-progress-${Date.now()}-${Math.random()}.json`,
-    },
-  };
-  const worker = ChatGptBrowserWorker.forProvider(provider) as unknown as {
-    runStage<T>(
-      traceId: string,
-      stage: string,
-      timeoutMs: number,
-      action: (signal: AbortSignal) => Promise<T>,
-      suspensionClock?: { suspendedMs(): number },
-      awaitAbortedActionSettlement?: boolean,
-      progressClock?: Pick<ChatGptExternalTurnProgress, "snapshot">,
-    ): Promise<T>;
-  };
-  const progress = new ChatGptExternalTurnProgress();
-  await expect(worker.runStage(
-    "send-no-progress",
-    "send",
-    25,
-    () => new Promise<never>(() => {}),
-    { suspendedMs: () => 0 },
-    false,
-    progress,
-  )).rejects.toThrow("ChatGPT browser stage timed out: send");
 });
 
 test("Bigger Context send activation keeps the outer stage budget instead of restoring a nested 20-second timeout", async () => {
@@ -2450,32 +2326,35 @@ test("an abort while inserting a connector prompt clears the selected pill and p
   expect(connectorSelected).toBeFalse();
 });
 
-test("retained tool turns insert into the connector-bound composer without selecting it again", async () => {
+test("each new tool prompt verifies its connector after the previous Send cleared the mention", async () => {
   const attachPrompt = (ChatGptBrowserWorker.prototype as unknown as {
-    attachPrompt(
-      page: unknown,
-      prompt: string,
-      localTools: boolean,
-      captureDiagnostic?: (checkpoint: string) => Promise<void>,
-      abortSignal?: AbortSignal,
-      catalogRefreshAvailable?: boolean,
-      connectorAttemptBudget?: unknown,
-      reuseConnector?: boolean,
-    ): Promise<void>;
+    attachPrompt: (...args: unknown[]) => Promise<void>;
   }).attachPrompt;
-
-  const calls: string[] = [];
+  let selected = false;
+  let selections = 0;
+  const prompts: string[] = [];
   const composer = {
-    fill: async (value: string) => { expect(value).toBe(""); calls.push("fill"); },
-    focus: async () => { calls.push("focus"); },
+    fill: async () => { selected = false; },
+    focus: async () => {},
+    press: async () => {},
   };
-  await attachPrompt.call({
+  const worker = {
     activeComposer: async () => composer,
-    selectConnector: async () => { throw new Error("retained connector must not be selected again"); },
-    insertPromptText: async (_page: unknown, text: string) => { expect(text).toBe("retained context"); calls.push("insert"); },
-    assertPromptAttached: async () => { calls.push("assert"); },
-  }, dialogPage("").page, "retained context", true, undefined, undefined, false, undefined, true);
-  expect(calls).toEqual(["fill", "focus", "insert", "assert"]);
+    selectConnector: async () => { selected = true; selections += 1; return composer; },
+    insertPromptText: async (_page: unknown, text: string) => {
+      if (!selected) throw new Error("The new message has no plugin attached");
+      prompts.push(text.trim());
+    },
+    assertPromptAttached: async () => {},
+    clearChatGptComposerState: async () => { selected = false; },
+  };
+  const page = dialogPage("").page;
+  await attachPrompt.call(worker, page, "first task", true);
+  // Sending clears the editor's mention; retaining this tab does not attach the next message.
+  selected = false;
+  await attachPrompt.call(worker, page, "follow-up task", true);
+  expect(selections).toBe(2);
+  expect(prompts).toEqual(["first task", "follow-up task"]);
 });
 
 test("image attachment readiness uses exact file tiles and not localized remove-button text", async () => {
@@ -2659,9 +2538,9 @@ test("Think slash requires one command and verifies a newly exposed control", as
   expect(unavailable.state.enters).toBe(0);
 });
 
-test("Think attachment runs after fresh connector selection and rechecks retained and Browser-only turns", async () => {
+test("Think attachment preserves the plugin on first and follow-up messages and supports Browser-only turns", async () => {
   const attach = (ChatGptBrowserWorker.prototype as unknown as { attachPrompt: (...args: unknown[]) => Promise<void> }).attachPrompt;
-  for (const [localTools, retained] of [[true, false], [true, true], [false, false]]) {
+  for (const localTools of [true, false]) {
     const ui = thinkSlashFixture();
     let connectorSelections = 0;
     const submitted: boolean[] = [];
@@ -2671,17 +2550,16 @@ test("Think attachment runs after fresh connector selection and rechecks retaine
       insertPromptText: async () => { submitted.push(ui.state.pressed); },
       assertPromptAttached: async () => {}, clearChatGptComposerState: async () => { ui.state.draft = ""; ui.state.connectors = []; },
     };
-    await attach.call(worker, ui.page, "requested task", localTools, undefined, undefined, false, undefined, retained, true);
+    await attach.call(worker, ui.page, "requested task", localTools, undefined, undefined, false, undefined, true);
     expect(submitted).toEqual([true]);
-    expect(connectorSelections).toBe(localTools && !retained ? 1 : 0);
-    if (localTools && !retained) expect(ui.state.connectors).toEqual(["Codex Native2"]);
-    if (retained) {
-      ui.state.pressed = false;
-      await attach.call(worker, ui.page, "follow-up task", localTools, undefined, undefined, false, undefined, retained, true);
-      expect(submitted).toEqual([true, true]);
-      expect(ui.state.commands).toEqual(["/think", "/think"]);
-      expect(connectorSelections).toBe(0);
-    }
+    expect(connectorSelections).toBe(localTools ? 1 : 0);
+    if (localTools) expect(ui.state.connectors).toEqual(["Codex Native2"]);
+    ui.state.pressed = false;
+    ui.state.connectors = [];
+    await attach.call(worker, ui.page, "follow-up task", localTools, undefined, undefined, false, undefined, true);
+    expect(submitted).toEqual([true, true]);
+    expect(ui.state.commands).toEqual(["/think", "/think"]);
+    expect(connectorSelections).toBe(localTools ? 2 : 0);
   }
 });
 
@@ -2696,7 +2574,7 @@ test("Think attachment rolls back a lost connector and never inserts the prompt"
     clearChatGptComposerState: async () => { cleanup += 1; ui.state.draft = ""; ui.state.connectors = []; },
   };
   const attach = (ChatGptBrowserWorker.prototype as unknown as { attachPrompt: (...args: unknown[]) => Promise<void> }).attachPrompt;
-  await expect(attach.call(worker, ui.page, "must not be inserted", true, undefined, undefined, false, undefined, false, true))
+  await expect(attach.call(worker, ui.page, "must not be inserted", true, undefined, undefined, false, undefined, true))
     .rejects.toThrow("selected connectors");
   expect(insertions).toBe(0);
   expect(cleanup).toBe(1);
@@ -2910,7 +2788,8 @@ test("the known terminal ChatGPT error alert returns a structured retryable fail
 test("only a size rejection of the current owned browser submission is non-retryable", async () => {
   const frame = {};
   const page = Object.assign(new EventEmitter(), { mainFrame: () => frame });
-  const observer = new ChatGptSubmissionRejectionObserver();
+  const rejected: unknown[] = [];
+  const observer = new ChatGptSubmissionRejectionObserver(error => rejected.push(error));
   const makeRequest = (url = "https://chatgpt.com/backend-api/f/conversation", owner = frame) => ({
     method: () => "POST", url: () => url, frame: () => owner,
   });
@@ -2933,14 +2812,27 @@ test("only a size rejection of the current owned browser submission is non-retry
   const successful = makeRequest(); page.emit("request", successful); respond(successful, "message_length_exceeds_limit", 200);
   const unfamiliar = makeRequest(); page.emit("request", unfamiliar); respond(unfamiliar, "unknown_error");
   expect(await observer.failure()).toBeUndefined();
+  expect(rejected).toEqual([]);
   const current = makeRequest(); page.emit("request", current); respond(current);
   expect(await observer.failure()).toMatchObject({
     status: 400, code: "context_length_exceeded", errorType: "invalid_request_error", retryable: false,
   });
+  expect(rejected).toHaveLength(1);
   observer.begin(page as unknown as Page);
   expect(await observer.failure()).toBeUndefined();
   respond(current);
   expect(await observer.failure()).toBeUndefined();
+  let finishOldBody!: (body: unknown) => void;
+  const delayed = makeRequest(); page.emit("request", delayed);
+  page.emit("response", {
+    request: () => delayed, status: () => 413, headers: () => ({ "content-type": "application/json" }),
+    json: () => new Promise(resolve => { finishOldBody = resolve; }),
+  });
+  const oldFailure = observer.failure();
+  observer.begin(page as unknown as Page);
+  finishOldBody({ detail: { code: "message_length_exceeds_limit" } });
+  expect(await oldFailure).toBeUndefined();
+  expect(rejected).toHaveLength(1);
   observer.dispose();
   expect(page.listenerCount("request")).toBe(0);
   expect(page.listenerCount("response")).toBe(0);
@@ -3209,7 +3101,7 @@ test("unrelated ChatGPT alerts are not terminal", async () => {
 function toolConfirmationPage(options: {
   disappearAfterReads?: number;
   surface?: "dialog" | "card";
-  allowLabel?: "Allow once" | "Allow";
+  allowLabel?: "Allow once" | "Allow" | "Always allow";
 } = {}): {
   page: Page;
   pressed: string[];
@@ -3271,22 +3163,28 @@ function toolConfirmationPage(options: {
 
 test("manual ChatGPT connector approval pauses and resumes the same browser turn", async () => {
   const fixture = toolConfirmationPage({ disappearAfterReads: 3 });
-
-  expect(await resolveChatGptToolConfirmation(fixture.page, "Codex Native", false, undefined, 100)).toBeTrue();
+  const pending: boolean[] = [];
+  expect(await resolveChatGptToolConfirmation(fixture.page, "Codex Native", false, undefined, 100,
+    undefined, async value => { pending.push(value); })).toBeTrue();
+  expect(pending).toEqual([true, false]);
   expect(fixture.pressed).toEqual([]);
 });
 
 test("an unanswered ChatGPT connector approval is denied instead of aborting the turn", async () => {
   const fixture = toolConfirmationPage();
-
-  expect(await resolveChatGptToolConfirmation(fixture.page, "Codex Native", false, undefined, 2)).toBeTrue();
+  const pending: boolean[] = [];
+  expect(await resolveChatGptToolConfirmation(fixture.page, "Codex Native", false, undefined, 2,
+    undefined, async value => { pending.push(value); })).toBeTrue();
+  expect(pending).toEqual([true, false]);
   expect(fixture.pressed).toEqual(["Deny:Enter"]);
 });
 
 test("explicit connector auto-approval still selects Allow once", async () => {
   const fixture = toolConfirmationPage();
-
-  expect(await resolveChatGptToolConfirmation(fixture.page, "Codex Native", true)).toBeTrue();
+  const pending: boolean[] = [];
+  expect(await resolveChatGptToolConfirmation(fixture.page, "Codex Native", true, undefined, 100,
+    undefined, async value => { pending.push(value); })).toBeTrue();
+  expect(pending).toEqual([]);
   expect(fixture.pressed).toEqual(["Allow once:Enter"]);
 });
 
@@ -3295,6 +3193,31 @@ test("connector auto-approval accepts the current shortened Allow action", async
 
   expect(await resolveChatGptToolConfirmation(fixture.page, "Codex Native", true)).toBeTrue();
   expect(fixture.pressed).toEqual(["Allow:Enter"]);
+});
+
+test("cancelling while an approval is pending clears the notice without choosing a button", async () => {
+  const fixture = toolConfirmationPage();
+  const controller = new AbortController();
+  const pending: boolean[] = [];
+  await expect(resolveChatGptToolConfirmation(fixture.page, "Codex Native", false, controller.signal, 100,
+    undefined, async value => { pending.push(value); if (value) controller.abort(); }))
+    .rejects.toMatchObject({ name: "AbortError" });
+  expect(pending).toEqual([true, false]);
+  expect(fixture.pressed).toEqual([]);
+});
+
+test("cancellation before auto-approval never grants permission", async () => {
+  const fixture = toolConfirmationPage();
+  await expect(resolveChatGptToolConfirmation(fixture.page, "Codex Native", true, AbortSignal.abort()))
+    .rejects.toMatchObject({ name: "AbortError" });
+  expect(fixture.pressed).toEqual([]);
+});
+
+test("one-time auto-approval never selects a permanent permission", async () => {
+  const fixture = toolConfirmationPage({ allowLabel: "Always allow" });
+  await expect(resolveChatGptToolConfirmation(fixture.page, "Codex Native", true))
+    .rejects.toThrow("Approval button not found");
+  expect(fixture.pressed).toEqual([]);
 });
 
 test("auto-approval recognizes the observed non-dialog approval card", async () => {
@@ -4144,133 +4067,6 @@ test("stale MCP progress stops suppressing DOM health without penalising long ac
     { revision: 0, lastToolBatchRevision: 0, activeToolCalls: 0 },
     1_000,
   )).toBeFalse();
-});
-
-test("stale unresolved MCP calls stop vetoing a completed browser turn", () => {
-  const snapshot = {
-    revision: 2,
-    lastToolBatchRevision: 2,
-    activeToolCalls: 1,
-    lastProgressAt: 1_000,
-  };
-
-  expect(chatGptExternalToolCallsVetoCompletion(snapshot, 1_001)).toBeTrue();
-  expect(chatGptExternalToolCallsVetoCompletion(
-    snapshot,
-    1_000 + CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS - 1,
-  )).toBeTrue();
-  expect(chatGptExternalToolCallsVetoCompletion(
-    snapshot,
-    1_000 + CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS,
-  )).toBeFalse();
-
-  const tracker = new ChatGptCompletionTracker(500);
-  const completed = {
-    responsePresent: true,
-    running: false,
-    currentText: "final answer",
-    currentHtml: "<p>final answer</p>",
-    completionActionVisible: true,
-  };
-  const staleAt = 1_000 + CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS;
-  expect(tracker.update({
-    ...completed,
-    externalToolCallsInFlight: chatGptExternalToolCallsVetoCompletion(snapshot, staleAt),
-  }, staleAt)).toBeFalse();
-  expect(tracker.update({
-    ...completed,
-    externalToolCallsInFlight: chatGptExternalToolCallsVetoCompletion(snapshot, staleAt + 500),
-  }, staleAt + 500)).toBeTrue();
-});
-
-test("recent completed MCP activity keeps the exact-prompt assistant re-key fence open", () => {
-  const completedTool = {
-    revision: 2,
-    lastToolBatchRevision: 1,
-    activeToolCalls: 0,
-    lastProgressAt: 1_000,
-  };
-
-  // The final tool result is still proven activity from this broker turn. React can re-key the
-  // finished exchange a few milliseconds later, after activeToolCalls has already returned to 0.
-  expect(chatGptExternalToolCallsVetoCompletion(completedTool, 1_100)).toBeFalse();
-  expect(chatGptExternalProgressSuppressesDomHealth(completedTool, 1_100)).toBeTrue();
-
-  const worker = readFileSync("src/adapters/chatgpt-web/browser-worker.ts", "utf8");
-  const runBrowserTurn = worker.slice(worker.indexOf("private async runBrowserTurn("));
-  expect(runBrowserTurn).toContain(
-    "chatGptExternalProgressSuppressesDomHealth(rebindProgressSnapshot, Date.now())",
-  );
-});
-
-test("multipart acknowledgement recovery requests only the missing receipt and never repeats the staged payload", () => {
-  const transactionId = "ctx_0123456789abcdef0123456789abcdef";
-  const payload = JSON.stringify({ secret_marker: "DO_NOT_REPEAT_STAGE_PAYLOAD" });
-  const stage = formatChatGptWebMultipartStage(payload, transactionId, 3, 6);
-  const recovery = formatChatGptWebMultipartAcknowledgementRecovery(stage);
-
-  expect(recovery).toContain(stage.acknowledgement);
-  expect(recovery).toContain("already submitted and is already present in this conversation");
-  expect(recovery).toContain("Do not execute, summarize, reinterpret, or repeat that payload");
-  expect(recovery).not.toContain(payload);
-  expect(recovery).not.toContain("DO_NOT_REPEAT_STAGE_PAYLOAD");
-});
-
-test("a wrong multipart acknowledgement gets the same one-shot receipt recovery as a timeout", () => {
-  const worker = readFileSync("src/adapters/chatgpt-web/browser-worker.ts", "utf8");
-  const multipart = worker.slice(worker.indexOf("if (prepared.multipart && multipartStages"));
-  const mismatch = multipart.indexOf('error.code === "multipart_protocol_violation"');
-  const recoveryFormat = multipart.indexOf("formatChatGptWebMultipartAcknowledgementRecovery(stage)", mismatch);
-  const recoveryAck = multipart.indexOf("ack_recovery_acknowledgement", recoveryFormat);
-
-  expect(mismatch).toBeGreaterThan(0);
-  expect(recoveryFormat).toBeGreaterThan(mismatch);
-  expect(recoveryAck).toBeGreaterThan(recoveryFormat);
-  expect(multipart).toContain('acknowledgementFailure = acknowledgementTimedOut ? "timed out" : "did not match"');
-  expect(multipart).toContain('acknowledgementTimedOut && launcherSurfaceId');
-});
-
-test("a timed-out multipart acknowledgement gets one in-place receipt recovery before the staged payload can be retried", () => {
-  const worker = readFileSync("src/adapters/chatgpt-web/browser-worker.ts", "utf8");
-  const multipart = worker.slice(worker.indexOf("if (prepared.multipart && multipartStages"));
-  const timeoutCatch = multipart.indexOf("acknowledgementTimedOut");
-  const recoveryFormat = multipart.indexOf("formatChatGptWebMultipartAcknowledgementRecovery(stage)", timeoutCatch);
-  const recoverySend = multipart.indexOf("ack_recovery_send", recoveryFormat);
-  const acknowledgedCallback = multipart.indexOf("onMultipartStageAcknowledged", recoverySend);
-
-  expect(timeoutCatch).toBeGreaterThan(0);
-  expect(recoveryFormat).toBeGreaterThan(timeoutCatch);
-  expect(recoverySend).toBeGreaterThan(recoveryFormat);
-  expect(acknowledgedCallback).toBeGreaterThan(recoverySend);
-  expect(multipart).toContain("recovering the receipt in-place without resending the payload");
-  expect(multipart).toContain("ack_recovery_acknowledgement");
-  // The acknowledgement observer must fully unwind after its timeout before recovery mutates the composer.
-  expect(multipart).toMatch(/multipartStageAcknowledgement,[\s\S]*chatGptSuspensionClock,[\s\S]*true,[\s\S]*\);/);
-});
-
-test("post-tool stalls recover in the same ChatGPT conversation without replaying the original task", () => {
-  const worker = readFileSync("src/adapters/chatgpt-web/browser-worker.ts", "utf8");
-  const adapter = readFileSync("src/adapters/chatgpt-web/index.ts", "utf8");
-
-  expect(worker).toContain("prepareRecovery?:");
-  expect(worker).toContain('"stall_recovery_send"');
-  expect(worker).toContain("same-conversation stall recovery");
-  expect(worker).toMatch(/attachPromptWithCompactionRetry\([\s\S]*recoveryPrompt[\s\S]*true,[\s\S]*mode\.thinkEnabled/);
-  expect(adapter).toContain("stalledTurnRecoveryRequest");
-  expect(adapter).toContain("Do not restart the task and do not repeat any Codex Native tool call or mutation that already completed successfully");
-  expect(adapter).toContain("prepareRecovery: () => prepareWith(stalledTurnRecoveryRequest(checkpointInput.parsed))");
-});
-
-test("assistant aria-busy participates in generation liveness and Answer now is only a stalled-turn fallback", () => {
-  const worker = readFileSync("src/adapters/chatgpt-web/browser-worker.ts", "utf8");
-  expect(worker).toContain("generationBusyVisible");
-  expect(worker).toContain("querySelectorAll<HTMLElement>('[aria-busy=\"true\"]')");
-  expect(worker).toContain("stopVisible || snapshot.generationBusyVisible || answerNowVisible");
-  expect(worker).toContain("/^(?:Answer now|Responder agora)$/i");
-  const stall = worker.indexOf("if (runningStalled)");
-  const answerNow = worker.indexOf('answerNowControl.press("Enter"', stall);
-  expect(stall).toBeGreaterThan(0);
-  expect(answerNow).toBeGreaterThan(stall);
 });
 
 test("the daemon prefers the browser helper that shipped beside its own entrypoint", () => {

@@ -1,13 +1,13 @@
-name: v6.1.3 Patch 7 Build
+name: v6.1.4 Patched Build
 
 on:
   push:
     branches:
       - main
-      - v6.1.3-base
-      - fix/v6.1.3-reliability
+      - v6.1.4-base
+      - fix/v6.1.4-reliability
     paths:
-      - "src/adapters/chatgpt-web/**"
+      - "src/**"
       - "launcher/**"
       - "scripts/**"
       - "tests/**"
@@ -54,7 +54,7 @@ jobs:
         run: Compress-Archive -Path launcher/build/runtime/* -DestinationPath patched-runtime-windows-amd64.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: Codex-Web-GPT-v6.1.3-Patch-7-Windows
+          name: Codex-Web-GPT-v6.1.4-Patched-Windows
           path: |
             launcher/artifacts/*.exe
             patched-runtime-windows-amd64.zip

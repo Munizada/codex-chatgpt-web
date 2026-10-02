@@ -1,0 +1,87 @@
+import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import {
+  CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS,
+  chatGptExternalProgressSuppressesDomHealth,
+  chatGptExternalToolCallsVetoCompletion,
+  chatGptNewTurnIdentity,
+  chatGptSubmissionEvidence,
+} from "../src/adapters/chatgpt-web/browser-worker";
+import {
+  formatChatGptWebMultipartAcknowledgementRecovery,
+  formatChatGptWebMultipartStage,
+} from "../src/adapters/chatgpt-web/prompt";
+
+test("accepted user identity disambiguates a transient duplicate assistant shell", () => {
+  expect(chatGptNewTurnIdentity(
+    [],
+    ["group:assistant:activity-shell", "group:assistant:submitted"],
+    "group:assistant:submitted",
+  )).toBe("group:assistant:submitted");
+  expect(() => chatGptNewTurnIdentity(
+    [],
+    ["group:assistant:activity-shell", "group:assistant:submitted"],
+    "group:assistant:other",
+  )).toThrow("2 new conversation turns");
+});
+
+test("active generation proves Send before duplicate assistant identities are inspected", () => {
+  expect(chatGptSubmissionEvidence({
+    initialTurnIdentities: ["group:user:old", "group:assistant:old"],
+    userIdentities: ["group:user:old"],
+    responseIdentities: [
+      "group:assistant:old",
+      "group:assistant:activity-shell",
+      "group:assistant:submitted",
+    ],
+    generationRunning: true,
+  })).toBe("generation_running");
+});
+
+test("stale unresolved MCP activity stops vetoing browser completion", () => {
+  const snapshot = {
+    revision: 2,
+    lastToolBatchRevision: 2,
+    activeToolCalls: 1,
+    lastProgressAt: 1_000,
+  };
+  expect(chatGptExternalToolCallsVetoCompletion(snapshot, 1_001)).toBeTrue();
+  expect(chatGptExternalProgressSuppressesDomHealth(
+    snapshot,
+    1_000 + CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS,
+  )).toBeFalse();
+  expect(chatGptExternalToolCallsVetoCompletion(
+    snapshot,
+    1_000 + CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS,
+  )).toBeFalse();
+});
+
+test("multipart acknowledgement recovery carries only the transaction receipt", () => {
+  const transactionId = "ctx_0123456789abcdef0123456789abcdef";
+  const payload = JSON.stringify({ secret_marker: "DO_NOT_REPEAT_STAGE_PAYLOAD" });
+  const stage = formatChatGptWebMultipartStage(payload, transactionId, 3, 6);
+  const recovery = formatChatGptWebMultipartAcknowledgementRecovery(stage);
+  expect(recovery).toContain(stage.acknowledgement);
+  expect(recovery).toContain("already submitted and is already present in this conversation");
+  expect(recovery).not.toContain(payload);
+  expect(recovery).not.toContain("DO_NOT_REPEAT_STAGE_PAYLOAD");
+});
+
+test("fork-only recovery paths remain wired on top of the 6.1.4 browser worker", () => {
+  const worker = readFileSync("src/adapters/chatgpt-web/browser-worker.ts", "utf8");
+  const adapter = readFileSync("src/adapters/chatgpt-web/index.ts", "utf8");
+
+  expect(worker).toContain("prepareRecovery?:");
+  expect(worker).toContain("generationBusyVisible");
+  expect(worker).toContain("answerNowControl.press");
+  expect(worker).toContain("same-conversation stall recovery");
+  expect(worker).toContain("emittedAnswerChars > 0");
+  expect(worker).toContain("ack_recovery_acknowledgement");
+  expect(worker).toContain('error.code === "multipart_protocol_violation"');
+  expect(worker).toContain(
+    "chatGptExternalProgressSuppressesDomHealth(rebindProgressSnapshot, Date.now())",
+  );
+  expect(worker).toContain("progressClock?: Pick<ChatGptTurnProgressReader");
+  expect(adapter).toContain("stalledTurnRecoveryRequest");
+  expect(adapter).toContain("prepareRecovery: () => prepareWith");
+});

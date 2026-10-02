@@ -119,7 +119,7 @@ export function formatChatGptWebMultipartAcknowledgementRecovery(
     "<codex_multipart_ack_recovery>",
     "The immediately preceding multipart context part was already submitted and is already present in this conversation.",
     "Do not execute, summarize, reinterpret, or repeat that payload. Do not call tools or use web search.",
-    "This message only recovers its transaction receipt after the previous acknowledgement response stalled.",
+    "This message only recovers its transaction receipt after the previous acknowledgement response stalled or returned the wrong receipt.",
     `Reply with exactly ${stage.acknowledgement} and nothing else.`,
     "</codex_multipart_ack_recovery>",
   ].join("\n");
@@ -686,9 +686,13 @@ export function compileChatGptWebPrompt(
       ...manualControlContract,
       ...checkpointContract,
       answerContract,
+      // Context is serialized data, not Markdown prose. A text fence keeps the
+      // composer's link parser from interpreting bracket-heavy task history.
+      "```text",
       "<codex_context_json>",
       envelopeJson,
       "</codex_context_json>",
+      "```",
       ...(omittedMessages > 0 ? [
         "<codex_transport_resume>",
         `${omittedMessages} earlier history items were omitted to fit this compaction request; the supplied history is incomplete.`,

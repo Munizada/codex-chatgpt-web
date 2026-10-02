@@ -20,9 +20,9 @@ import {
 import { chatGptReadOnlyContextWarning, compileChatGptWebPrompt, withoutSupersededModelSwitchContracts } from "../src/adapters/chatgpt-web/prompt";
 import { MAX_CHATGPT_WEB_TURN_RETRIES } from "../src/adapters/chatgpt-web/retry-policy";
 import { ChatGptTextFeed, ChatGptTraceFeed, ChatGptTurnSessions, chatGptCompactionSourceExecutionKey, chatGptInstructionLineage, chatGptThreadOwnershipKey, chatGptTurnExecutionKey, chatGptTurnSessions } from "../src/adapters/chatgpt-web/turn-execution";
-import { callTurnBroker, TurnBroker, type BrokerToolResult } from "../src/adapters/chatgpt-web/turn-broker";
+import { callTurnBroker, TurnBroker, RemoteTurnBroker, type BrokerToolResult } from "../src/adapters/chatgpt-web/turn-broker";
 import { ChatGptExternalTurnProgress, ChatGptMirroredTurnProgress, chatGptExternalProgressIsLive, chatGptExternalToolCallsAreInFlight } from "../src/adapters/chatgpt-web/turn-progress";
-import { CHATGPT_WEB_EXEC_DEFAULT_YIELD_MS, CHATGPT_WEB_EXEC_MAX_YIELD_MS, CHATGPT_WEB_MCP_INVOCATION_TIMEOUT_MS, CHATGPT_WEB_WRITE_STDIN_MAX_YIELD_MS, chatGptMcpInvocationTimeout } from "../src/adapters/chatgpt-web/mcp-server";
+import { CHATGPT_WEB_MCP_INVOCATION_TIMEOUT_MS, chatGptMcpInvocationTimeout } from "../src/adapters/chatgpt-web/mcp-server";
 import { defaultBrokerEndpoint } from "../src/config";
 import { estimateChatGptWebUsage } from "../src/adapters/chatgpt-web/usage";
 import { decodeCompactionSummary, SUMMARY_PREFIX } from "../src/responses/compaction";
@@ -1539,6 +1539,26 @@ describe("ChatGPT outer-native harness v4", () => {
     expect(files[0]!.mimeType).toBe("image/png");
   });
 
+  test("inline context is a literal text block with unchanged JSON, including Markdown-shaped history", () => {
+    // Large unfenced context stalling the composer was reported in #731 by @korboybeats.
+    const content = "[".repeat(25_000) + "nested [link](target)\n```\n</codex_context_json>\n";
+    for (const compaction of [false, true]) {
+      const request = parsed();
+      request.context.systemPrompt = ["Preserve the supplied text exactly."];
+      request.context.messages = [{ role: "user", content, timestamp: 1 }];
+      request._compactionRequest = compaction;
+      const compiled = compileChatGptWebPrompt(request, toolCapabilities, "turn_123456789012345678901234");
+      const envelope = compiled.text.match(/^```text\n<codex_context_json>\n([^\n]+)\n<\/codex_context_json>\n```$/m);
+      expect(envelope).not.toBeNull();
+      const context = JSON.parse(envelope![1]!);
+      expect(context.system).toEqual(request.context.systemPrompt);
+      expect(context.messages).toHaveLength(1);
+      expect(context.messages[0].content).toBe(content);
+      expect(compiled.images).toEqual([]);
+      expect(compiled.multipart).toBeUndefined();
+    }
+  });
+
   test("keeps browser-only Pro context complete without creating a local-tool capability", () => {
     const imageUrl = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAE0lEQVR4nGP4z8DwHwwZGP6DAQBJyAn3FGMynQAAAABJRU5ErkJggg==";
     const request = proRequest();
@@ -1901,6 +1921,7 @@ describe("ChatGPT outer-native harness v4", () => {
       expect(diagnostic).toEqual({
         reason: "text_changed", observedStart: 0, observedEnd: 6,
         committedStart: 0, committedEnd: 6, observedTextChars: 7, committedTextChars: 6,
+        observedTag: "p", committedTag: "p", observedIndex: 0, committedIndex: 0,
       });
       expect(JSON.stringify(diagnostic)).not.toMatch(/Stable|Changed|<p/);
     }
@@ -1939,29 +1960,52 @@ describe("ChatGPT outer-native harness v4", () => {
     });
   });
 
-  test("repeated semantic blocks fail closed when an earlier occurrence disappears", () => {
-    const buffer = new ChatGptMarkdownBuffer(markdown => markdown, 0);
-    const segment = (key: string, text: string) => ({
-      key, tag: "p", html: `<p>${text}</p>`, text, streamable: true,
+  test("repeated paragraphs retain their order after committed blocks disappear", () => {
+    const segment = (key: number, text: string, streamable = true) => ({
+      key: `${key}:p`, tag: "p", html: `<p>${text}</p>`, text, streamable,
     });
-    const complete = [
-      segment("0:p", "First"),
-      segment("1:p", "Same"),
-      segment("2:p", "Middle"),
-      segment("3:p", "Same"),
-    ];
-    expect(buffer.observe(complete, 0)).toBe("First\n\nSame\n\nMiddle\n\nSame");
+    for (const snapshot of ["full", "missing-prefix", "missing-first-copy"]) {
+      const buffer = new ChatGptMarkdownBuffer(markdown => markdown, 0);
+      buffer.observe([segment(0, "First"), segment(1, "Same"), segment(2, "Middle", false)], 0);
+      buffer.observe([segment(0, "First"), segment(1, "Same"), segment(2, "Middle"), segment(3, "Same", false)], 1);
+      if (snapshot === "missing-prefix") buffer.observe([segment(20, "Middle"), segment(21, "Same", false)], 2);
+      if (snapshot === "missing-first-copy") buffer.observe([segment(20, "First"), segment(21, "Middle"), segment(22, "Same", false)], 2);
+      expect(buffer.finish()).toEqual({ markdown: "First\n\nSame\n\nMiddle\n\nSame", delta: "\n\nSame" });
+    }
+  });
 
-    // Simulate a renderer re-key while the first repeated occurrence disappears. The remaining
-    // later copy must not be relabelled as the missing first copy or accepted as a valid snapshot.
-    const missingFirstCopy = [
-      segment("r0:p", "First"),
-      segment("r2:p", "Middle"),
-      segment("r3:p", "Same"),
-    ];
-    expect(buffer.observe(missingFirstCopy, 1)).toBe("");
-    expect(buffer.currentSnapshotIsConsistent()).toBeFalse();
-    expect(() => buffer.finish()).toThrow("changed a completed text block");
+  test("an unchanged report with two None paragraphs does not rebind its pending tail", () => {
+    const segment = (index: number, text: string, streamable = true) => ({
+      key: `${index}:p`, tag: "p", html: `<p>${text}</p>`, text, streamable,
+    });
+    for (const none of ["None.", "なし。"]) {
+      const buffer = new ChatGptMarkdownBuffer(markdown => markdown, 0);
+      const report = [segment(7, "Unverified:"), segment(8, none),
+        segment(9, "Remaining risk:"), segment(10, none, false)];
+      expect(buffer.observe(report, 0)).toBe(`Unverified:\n\n${none}\n\nRemaining risk:`);
+      expect(buffer.observe(report, 1)).toBe("");
+      expect(buffer.finish()).toEqual({
+        markdown: `Unverified:\n\n${none}\n\nRemaining risk:\n\n${none}`,
+        delta: `\n\n${none}`,
+      });
+    }
+  });
+
+  test("repeated text cannot hide reordering, changed links, or ambiguous remounted history", () => {
+    const segment = (key: string, text: string, linkTargets: string[] = []) => ({
+      key, tag: "p", html: `<p>${text}</p>`, text, streamable: true, linkTargets,
+    });
+    for (const mode of ["reorder", "links", "ambiguous"]) {
+      const buffer = new ChatGptMarkdownBuffer(markdown => markdown, 0);
+      const original = [segment("a", "Same"), segment("b", "Middle"), segment("c", "Same")];
+      buffer.observe(original, 0);
+      const changed = mode === "reorder" ? [original[1]!, original[0]!]
+        : mode === "links" ? [original[0]!, original[1]!, segment("c", "Same", ["https://changed.example"])]
+        : [segment("remounted", "Same")];
+      buffer.observe(changed, 1);
+      expect(buffer.currentSnapshotIsConsistent()).toBeFalse();
+      expect(() => buffer.finish()).toThrow();
+    }
   });
 
   test("fails closed when a DOM snapshot reverses ChatGPT source order", () => {
@@ -2476,7 +2520,7 @@ describe("ChatGPT outer-native harness v4", () => {
           type: "function_call",
           call_id: callStart!.id,
           name: "exec_command",
-          arguments: JSON.stringify({ cmd: "pwd", workdir: tempRoot, yield_time_ms: CHATGPT_WEB_EXEC_DEFAULT_YIELD_MS }),
+          arguments: JSON.stringify({ cmd: "pwd", workdir: tempRoot }),
         },
         {
           type: "function_call_output",
@@ -2792,7 +2836,7 @@ describe("ChatGPT outer-native harness v4", () => {
         justification: "May the local fixture command run outside the sandbox?",
         prefix_rule: ["pwd"],
       })))).toBe(true);
-      expect(execRequests.some(request => request.input?.includes(JSON.stringify({ cmd: "git status --short", workdir: tempRoot, yield_time_ms: CHATGPT_WEB_EXEC_DEFAULT_YIELD_MS })))).toBe(true);
+      expect(execRequests.some(request => request.input?.includes(JSON.stringify({ cmd: "git status --short", workdir: tempRoot })))).toBe(true);
       for (const request of execRequests) {
         expect(request.input).toContain("ALL_TOOLS");
         expect(request.input).toContain('"exec_command"');
@@ -3007,46 +3051,6 @@ describe("ChatGPT outer-native harness v4", () => {
         text: JSON.stringify({ output: "web__run", exit_code: 0 }),
       }]);
 
-      const rawExec = call("codex_tool_call", {
-        turn_token: token,
-        wire_name: "exec",
-        input: "await tools.exec_command({ cmd: \"pwd\", yield_time_ms: 300000 });",
-      });
-      const [rawExecRequest] = await broker.nextToolBatch(token);
-      expect(rawExecRequest).toMatchObject({ wireName: "exec", freeform: true });
-      const rawExecCalls: GatewayProgramCall[] = [];
-      const rawExecContent = await executeGatewayProgram(
-        rawExecRequest!.input!,
-        ["exec_command"],
-        rawExecCalls,
-      );
-      expect(rawExecCalls).toEqual([{
-        name: "exec_command",
-        input: { cmd: "pwd", yield_time_ms: CHATGPT_WEB_EXEC_MAX_YIELD_MS },
-      }]);
-      broker.completeTool(token, rawExecRequest!.callId, { content: rawExecContent });
-      expect((await rawExec).isError).not.toBeTrue();
-
-      const rawWriteStdin = call("codex_tool_call", {
-        turn_token: token,
-        wire_name: "exec",
-        input: "await tools.write_stdin({ session_id: 42, yield_time_ms: 300000 });",
-      });
-      const [rawWriteStdinRequest] = await broker.nextToolBatch(token);
-      expect(rawWriteStdinRequest).toMatchObject({ wireName: "exec", freeform: true });
-      const rawWriteStdinCalls: GatewayProgramCall[] = [];
-      const rawWriteStdinContent = await executeGatewayProgram(
-        rawWriteStdinRequest!.input!,
-        ["write_stdin"],
-        rawWriteStdinCalls,
-      );
-      expect(rawWriteStdinCalls).toEqual([{
-        name: "write_stdin",
-        input: { session_id: 42, yield_time_ms: CHATGPT_WEB_WRITE_STDIN_MAX_YIELD_MS },
-      }]);
-      broker.completeTool(token, rawWriteStdinRequest!.callId, { content: rawWriteStdinContent });
-      expect((await rawWriteStdin).isError).not.toBeTrue();
-
       const waitPromise = call("codex_tool_call", {
         turn_token: token,
         wire_name: "wait",
@@ -3148,7 +3152,7 @@ describe("ChatGPT outer-native harness v4", () => {
         try {
           const pending = client.callTool({ name: "codex_exec", arguments: { turn_token: token, cmd: "pwd", ...permissions } });
           const [request] = await broker.nextToolBatch(token);
-          const expected = name === "exec_command" ? { cmd: "pwd", yield_time_ms: CHATGPT_WEB_EXEC_DEFAULT_YIELD_MS, ...permissions } : { command: "pwd", ...permissions };
+          const expected = name === "exec_command" ? { cmd: "pwd", ...permissions } : { command: "pwd", ...permissions };
           broker.completeTool(token, request!.callId, { content: [{ type: "text", text: "Native approval denied" }], isError: true });
           const response = await pending;
           expect(request).toMatchObject({ wireName: name, arguments: expected });
@@ -3169,7 +3173,7 @@ describe("ChatGPT outer-native harness v4", () => {
         for (const request of batch) broker.completeTool(token, request.callId, toolResult({ output: "fixture", exit_code: 0 }));
         await ordinary;
         expect(batch).toHaveLength(1);
-        expect(batch[0]!.arguments).toEqual({ cmd: "pwd", yield_time_ms: CHATGPT_WEB_EXEC_DEFAULT_YIELD_MS });
+        expect(batch[0]!.arguments).toEqual({ cmd: "pwd" });
       } finally { broker.revoke(token); }
     } finally {
       await client.close();
@@ -3242,7 +3246,7 @@ describe("ChatGPT outer-native harness v4", () => {
         turn_token: token,
         session_id: 42,
         chars: "y\n",
-        yield_time_ms: 300_000,
+        yield_time_ms: 5_000,
         max_output_tokens: 2_000,
       });
       const [writeRequest] = await broker.nextToolBatch(token);
@@ -3252,7 +3256,7 @@ describe("ChatGPT outer-native harness v4", () => {
         arguments: {
           session_id: 42,
           chars: "y\n",
-          yield_time_ms: CHATGPT_WEB_WRITE_STDIN_MAX_YIELD_MS,
+          yield_time_ms: 5_000,
           max_output_tokens: 2_000,
         },
       }));
@@ -3393,7 +3397,7 @@ describe("ChatGPT outer-native harness v4", () => {
       expect(execRequest?.input).toContain("ALL_TOOLS");
       expect(execRequest?.input).toContain('"exec_command"');
       expect(execRequest?.input).toContain('"shell_command"');
-      expect(execRequest?.input).toContain(JSON.stringify({ cmd: "pwd", workdir: tempRoot, yield_time_ms: CHATGPT_WEB_EXEC_DEFAULT_YIELD_MS }));
+      expect(execRequest?.input).toContain(JSON.stringify({ cmd: "pwd", workdir: tempRoot }));
       broker.completeTool(token, execRequest!.callId, toolResult({ output: tempRoot, exit_code: 0 }));
       expect((await execPromise).structuredContent).toEqual({ output: tempRoot, exit_code: 0 });
     } finally {
@@ -3544,7 +3548,7 @@ describe("ChatGPT outer-native harness v4", () => {
     }
   }, 10_000);
 
-  test("a retired MCP binding closes the adapter tool boundary before the stale batch can be emitted", async () => {
+  test.each([false, true])("a retired MCP binding closes the adapter tool boundary and preserves timeout=%s", async timedOut => {
     const socketPath = brokerTestEndpoint(`cgw-h3-retired-boundary-${process.pid}-${Date.now()}`);
     const provider: CodexProviderConfig = {
       adapter: "chatgpt-web",
@@ -3588,7 +3592,22 @@ describe("ChatGPT outer-native harness v4", () => {
         }
         expect(snapshot.activeToolCalls).toBe(1);
 
-        await callTurnBroker(socketPath, { method: "release", bindingId: claimed.bindingId });
+        if (timedOut) {
+          await expect(callTurnBroker(socketPath, {
+            method: "release", bindingId: claimed.bindingId,
+            failure: { code: "codex_tool_timeout", tool: "exec_command", timeoutMs: -1 },
+          })).rejects.toThrow("Invalid Codex tool retirement failure");
+        }
+        const remoteRetirement = new RemoteTurnBroker(socketPath).waitForRetirement(token);
+        // Queue the observer before release so both local and remote owners see the same event.
+        await callTurnBroker(socketPath, { method: "resolve", bindingId: claimed.bindingId });
+        await callTurnBroker(socketPath, {
+          method: "release", bindingId: claimed.bindingId,
+          ...(timedOut ? { failure: { code: "codex_tool_timeout" as const, tool: "exec_command", timeoutMs: 90_000 } } : {}),
+        });
+        expect(await remoteRetirement).toEqual(timedOut
+          ? { code: "codex_tool_timeout", tool: "exec_command", timeoutMs: 90_000 }
+          : undefined);
         const invocationResult = await invocationOutcome;
         expect(invocationResult.type).toBe("error");
         await broker.waitForRetirement(token);
@@ -3621,11 +3640,11 @@ describe("ChatGPT outer-native harness v4", () => {
       );
       await retirementObserved;
       expect(retiredProgress?.activeToolCalls).toBe(0);
-      expect(lateAcknowledgementError?.message).toContain("retired the turn binding");
+      expect(lateAcknowledgementError?.message).toContain(timedOut ? "exec_command" : "retired the turn binding");
       expect(events.some(event => event.type === "tool_call_start")).toBeFalse();
       expect(events.at(-1)).toMatchObject({
         type: "error",
-        code: "chatgpt_submitted_turn_failed",
+        code: timedOut ? "codex_tool_timeout" : "chatgpt_submitted_turn_failed",
       });
     } finally {
       (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
