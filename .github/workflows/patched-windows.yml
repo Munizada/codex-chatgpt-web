@@ -1,4 +1,4 @@
-name: v6.1.4 Reliability Patch 1 Build
+name: v6.1.4 Reliability Patch 2 Build
 
 on:
   push:
@@ -54,7 +54,7 @@ jobs:
         run: Compress-Archive -Path launcher/build/runtime/* -DestinationPath patched-runtime-windows-amd64.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: Codex-Web-GPT-v6.1.4-Reliability-Patch-1-Windows
+          name: Codex-Web-GPT-v6.1.4-Reliability-Patch-2-Windows
           path: |
             launcher/artifacts/*.exe
             patched-runtime-windows-amd64.zip

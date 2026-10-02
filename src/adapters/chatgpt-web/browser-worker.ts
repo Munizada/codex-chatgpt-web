@@ -5846,7 +5846,9 @@ export class ChatGptBrowserWorker {
             };
             responseDomCache.key = undefined;
             responseDomCache.snapshot = undefined;
-            runningStallTracker.reset();
+            // Preserve the running-stall timer across a transport-only rebind. If the refreshed
+            // page exposes real progress the tracker resets itself from the new signature/state;
+            // otherwise do not spend another full 10-minute window before failing closed.
             quiescentStallTracker.reset();
             await diagnostics.capture(page, "running-stall-rebound");
             continue;
@@ -5998,7 +6000,9 @@ export class ChatGptBrowserWorker {
             responseDomCache.key = undefined;
             responseDomCache.snapshot = undefined;
             runningStallTracker.reset();
-            quiescentStallTracker.reset();
+            // Preserve the quiescent-stall timer across a transport-only rebind. A changed
+            // response/progress signature resets it naturally; an unchanged stuck page is handled
+            // immediately instead of consuming a second full quiescent grace window.
             await diagnostics.capture(page, "quiescent-stall-rebound");
             continue;
           }

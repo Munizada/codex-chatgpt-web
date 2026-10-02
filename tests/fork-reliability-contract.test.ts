@@ -77,6 +77,8 @@ test("fork-only recovery paths remain wired on top of the 6.1.4 browser worker",
   expect(worker).toContain("same-conversation stall recovery");
   expect(worker).toContain("quiescent recovery decision");
   expect(worker).not.toContain("|| emittedAnswerChars > 0) return false");
+  expect(worker).toContain("Preserve the running-stall timer across a transport-only rebind");
+  expect(worker).toContain("Preserve the quiescent-stall timer across a transport-only rebind");
   expect(worker).toContain("ack_recovery_acknowledgement");
   expect(worker).toContain('error.code === "multipart_protocol_violation"');
   expect(worker).toContain(
