@@ -4216,6 +4216,20 @@ test("multipart acknowledgement recovery requests only the missing receipt and n
   expect(recovery).not.toContain("DO_NOT_REPEAT_STAGE_PAYLOAD");
 });
 
+test("a wrong multipart acknowledgement gets the same one-shot receipt recovery as a timeout", () => {
+  const worker = readFileSync("src/adapters/chatgpt-web/browser-worker.ts", "utf8");
+  const multipart = worker.slice(worker.indexOf("if (prepared.multipart && multipartStages"));
+  const mismatch = multipart.indexOf('error.code === "multipart_protocol_violation"');
+  const recoveryFormat = multipart.indexOf("formatChatGptWebMultipartAcknowledgementRecovery(stage)", mismatch);
+  const recoveryAck = multipart.indexOf("ack_recovery_acknowledgement", recoveryFormat);
+
+  expect(mismatch).toBeGreaterThan(0);
+  expect(recoveryFormat).toBeGreaterThan(mismatch);
+  expect(recoveryAck).toBeGreaterThan(recoveryFormat);
+  expect(multipart).toContain('acknowledgementFailure = acknowledgementTimedOut ? "timed out" : "did not match"');
+  expect(multipart).toContain('acknowledgementTimedOut && launcherSurfaceId');
+});
+
 test("a timed-out multipart acknowledgement gets one in-place receipt recovery before the staged payload can be retried", () => {
   const worker = readFileSync("src/adapters/chatgpt-web/browser-worker.ts", "utf8");
   const multipart = worker.slice(worker.indexOf("if (prepared.multipart && multipartStages"));

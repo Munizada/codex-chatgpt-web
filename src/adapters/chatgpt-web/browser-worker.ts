@@ -5301,18 +5301,28 @@ export class ChatGptBrowserWorker {
           } catch (error) {
             const acknowledgementTimedOut = error instanceof Error
               && error.message === `ChatGPT browser stage timed out: ${acknowledgementStage}`;
-            if (!acknowledgementTimedOut || turn.abortSignal?.aborted) throw error;
+            const acknowledgementProtocolViolation = error instanceof ChatGptWebAdapterError
+              && error.code === "multipart_protocol_violation";
+            if ((!acknowledgementTimedOut && !acknowledgementProtocolViolation) || turn.abortSignal?.aborted) throw error;
 
             // Send was already semantically accepted, so never replay the large staged payload.
-            // Recover only the missing receipt inside the same ChatGPT conversation. Earlier
-            // acknowledged parts and this accepted user message remain the transaction authority.
+            // A missing receipt and a completed-but-wrong receipt are both recoverable exactly once
+            // with a tiny same-conversation acknowledgement request. The recovery response is still
+            // validated strictly; a second mismatch fails closed.
+            const acknowledgementFailure = acknowledgementTimedOut ? "timed out" : "did not match";
             console.warn(
               `[chatgpt-web] browser turn ${turn.traceId} multipart part ${index + 1}/${prepared.multipart.parts.length}`
-              + " acknowledgement timed out; recovering the receipt in-place without resending the payload",
+              + ` acknowledgement ${acknowledgementFailure}; recovering the receipt in-place without resending the payload`,
             );
-            await diagnostics.capture(page, `multipart-stage-${index + 1}-ack-timeout`, error);
+            await diagnostics.capture(
+              page,
+              `multipart-stage-${index + 1}-ack-${acknowledgementTimedOut ? "timeout" : "mismatch"}`,
+              error,
+            );
 
-            if (launcherSurfaceId) {
+            // A timeout can leave the observed page/assistant shell stale, so rebind before touching
+            // the composer. A protocol mismatch proves the page is responsive and needs no rebind.
+            if (acknowledgementTimedOut && launcherSurfaceId) {
               await rebindLauncherPage(
                 MAX_CHATGPT_BROWSER_PAGE_REBINDS + 2 + index,
                 new Error(`Multipart part ${index + 1} acknowledgement timed out`),
