@@ -35,7 +35,7 @@ test("a visibly running turn must still make observable progress", () => {
 });
 
 test("a quiescent incomplete turn must still make observable progress", () => {
-  expect(CHATGPT_QUIESCENT_STALL_GRACE_MS).toBe(10 * 60_000);
+  expect(CHATGPT_QUIESCENT_STALL_GRACE_MS).toBe(2 * 60_000);
   const tracker = new ChatGptQuiescentStallTracker();
   const stalled = {
     responsePresent: true,
