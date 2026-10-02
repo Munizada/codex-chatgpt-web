@@ -1161,8 +1161,11 @@ export const browserStageTimeouts = {
   // A Bigger Context stage posts a much larger payload onto a conversation that already holds the
   // earlier parts. This budget covers ChatGPT accepting the submission, not just the click.
   multipartStageSend: 180_000,
-  // Staging asks for one transaction-bound acknowledgement, not an open-ended model answer.
-  multipartStageAcknowledgement: CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS,
+  // Staging asks for one transaction-bound receipt, not an open-ended model answer. Once the
+  // user message is accepted the large payload is already in conversation history, so a stalled
+  // receipt can be recovered safely instead of burning the full 180-second DOM grace.
+  multipartStageAcknowledgement: 45_000,
+  multipartStageRecoveryAcknowledgement: 20_000,
 } as const;
 
 /**
@@ -3113,26 +3116,77 @@ export class ChatGptBrowserWorker {
     return snapshot;
   }
 
+  private async submittedUserTurnIdentity(
+    page: Page,
+    baseline: ChatGptSubmissionBaseline,
+    state: ChatGptSubmissionDomState,
+    signal?: AbortSignal,
+  ): Promise<string | undefined> {
+    const previous = new Set(baseline.initialTurnIdentities);
+    const added = state.userIdentities.filter(identity => !previous.has(identity));
+    if (added.length <= 1) return added[0];
+
+    // The renderer can re-key an older staged user group in the same React batch that mounts the
+    // newly submitted user turn. Do not restart a large multipart transaction merely because two
+    // new user identities are visible: select the one whose message-content target exactly equals
+    // the physical prompt we just submitted. Any zero/multiple-match ambiguity still fails closed.
+    if (!baseline.submittedText) {
+      return chatGptNewTurnIdentity(baseline.initialTurnIdentities, state.userIdentities);
+    }
+    const matches: string[] = [];
+    for (const identity of added) {
+      const prefix = "group:user:";
+      const locator = identity.startsWith(prefix)
+        ? page.locator(`[data-turn-key=${JSON.stringify(identity.slice(prefix.length))}]`)
+        : page.locator(`[data-turn-id=${JSON.stringify(identity)}]`);
+      const count = await withChatGptBrowserObservationTimeout(
+        withBrowserTurnAbort(locator.count(), signal),
+      );
+      if (count !== 1) continue;
+      const exact = await withChatGptBrowserObservationTimeout(withBrowserTurnAbort(
+        locator.evaluate((turn, submitted) => {
+          const bubbles = turn.querySelectorAll<HTMLElement>("[data-user-message-bubble]");
+          const contents = bubbles.length === 1
+            ? bubbles[0]!.querySelectorAll<HTMLElement>("[data-search-result-target]")
+            : [];
+          const normalize = (text: string) => text.replace(/\r\n?/g, "\n");
+          return contents.length === 1
+            && normalize(contents[0]!.innerText) === normalize(submitted);
+        }, baseline.submittedText),
+        signal,
+      ));
+      if (exact) matches.push(identity);
+    }
+    return chatGptNewTurnIdentity(
+      baseline.initialTurnIdentities,
+      state.userIdentities,
+      matches.length === 1 ? matches[0] : undefined,
+    );
+  }
+
   private async currentSubmissionEvidence(
     page: Page,
     baseline: ChatGptSubmissionBaseline,
     signal?: AbortSignal,
   ): Promise<ChatGptSubmissionEvidence | undefined> {
     const state = await this.submissionDomState(page, baseline.domCache, signal);
-    const evidence = chatGptSubmissionEvidence({
-      initialTurnIdentities: baseline.initialTurnIdentities,
-      userIdentities: state.userIdentities,
-      responseIdentities: state.responseIdentities,
-      generationRunning: state.visibleStopButtonCount > 0,
-    });
+    const userIdentity = await this.submittedUserTurnIdentity(page, baseline, state, signal);
+    let evidence: ChatGptSubmissionEvidence | undefined;
+    if (userIdentity) evidence = "user_turn";
+    else if (state.visibleStopButtonCount > 0) evidence = "generation_running";
+    else if (chatGptNewTurnIdentity(
+      baseline.initialTurnIdentities,
+      state.responseIdentities,
+      chatGptAssistantIdentityForUser(baseline.acceptedUserIdentity),
+    )) evidence = "assistant_turn";
+
     if (evidence === "user_turn") {
       // Activity can temporarily replace this group before the assistant is mounted.
-      // Preserve the identity that acknowledged Send, independently of rendered text.
-      const identity = chatGptNewTurnIdentity(baseline.initialTurnIdentities, state.userIdentities)!;
-      if (baseline.acceptedUserIdentity && baseline.acceptedUserIdentity !== identity) {
+      // Preserve the exact identity that acknowledged Send, independently of rendered text.
+      if (baseline.acceptedUserIdentity && baseline.acceptedUserIdentity !== userIdentity) {
         throw new Error("ChatGPT changed the user turn that acknowledged the submission");
       }
-      baseline.acceptedUserIdentity = identity;
+      baseline.acceptedUserIdentity = userIdentity;
     }
     return evidence;
   }
@@ -5227,6 +5281,25 @@ export class ChatGptBrowserWorker {
       );
       let mode = await this.runStage(turn.traceId, "effort_selection", browserStageTimeouts.effortSelection, selectStagingMode);
       await diagnostics.capture(page, "effort-selection-complete");
+      const ensureStagingMode = async (stageName: string): Promise<void> => {
+        if (mode.selection && mode.selection.url === page.url()) {
+          try {
+            // The full family proof was already established when this selection was created.
+            // Intermediate inert staging sends only need to prove the same ready label/surface.
+            await this.assertSelectedEffort(page, mode, false);
+            console.info(`[chatgpt-web] browser turn ${turn.traceId} reused proven staging model selection for ${stageName}`);
+            return;
+          } catch {
+            // A replaced picker is recoverable by re-selecting below.
+          }
+        }
+        mode = await this.runStage(
+          turn.traceId,
+          stageName,
+          browserStageTimeouts.effortSelection,
+          selectStagingMode,
+        );
+      };
 
       // One receipt per physical Send, not per native tool call or stream attachment.
       // The ID survives observation recovery; a new actual Send receives a new ID.
@@ -5260,12 +5333,10 @@ export class ChatGptBrowserWorker {
       if (prepared.multipart && multipartStages && multipartTransactionId && multipartFinalPrompt) {
         for (let index = 0; index < multipartStages.length; index += 1) {
           const stage = multipartStages[index]!;
-          // Each acknowledgement can replace the picker controls. Establish a fresh model/effort
-          // proof for the next physical submission, retaining family selection and usage evidence.
-          if (index > 0) mode = await this.runStage(
-            turn.traceId, `multipart_stage_${index + 1}_effort_selection`,
-            browserStageTimeouts.effortSelection, selectStagingMode,
-          );
+          // The first saved message changes the URL and any acknowledgement may replace picker
+          // controls. Reuse the already-proven selection when its same surface is still intact;
+          // otherwise re-select it before attaching the next inert stage.
+          if (index > 0) await ensureStagingMode(`multipart_stage_${index + 1}_effort_selection`);
           console.info(`[chatgpt-web] multipart_stage_prepared ${JSON.stringify({
             traceId: turn.traceId, part: index + 1, total: prepared.multipart.parts.length,
             effort: mode.effort, modelFamily: mode.modelFamily,
@@ -5299,7 +5370,7 @@ export class ChatGptBrowserWorker {
               turn.abortSignal ? AbortSignal.any([stageSignal, turn.abortSignal]) : stageSignal,
               undefined,
               { onSubmitted: recordStageUsage, onSendActivated: async () => {
-                await this.assertSelectedEffort(page, mode);
+                await this.assertSelectedEffort(page, mode, false);
                 submissionRejection.begin(page);
               } },
               undefined,
@@ -5319,12 +5390,13 @@ export class ChatGptBrowserWorker {
           const awaitStageAcknowledgement = async (
             stageName: string,
             initialBaseline: ChatGptSubmissionBaseline,
+            timeoutMs = browserStageTimeouts.multipartStageAcknowledgement,
           ): Promise<void> => {
             let acknowledgementBaseline = initialBaseline;
             await this.runStage(
               turn.traceId,
               stageName,
-              browserStageTimeouts.multipartStageAcknowledgement,
+              timeoutMs,
               async (stageSignal) => {
                 const acknowledgementSignal = turn.abortSignal
                   ? AbortSignal.any([stageSignal, turn.abortSignal])
@@ -5337,7 +5409,7 @@ export class ChatGptBrowserWorker {
                   // A part still being ingested has produced no MCP activity, so there is no progress
                   // to consult here; the dedicated acknowledgement stage owns this wait.
                   undefined,
-                  CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS,
+                  Math.min(CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, timeoutMs),
                   undefined,
                   launcherObservationRecovery
                     ? async (...args) => {
@@ -5410,12 +5482,7 @@ export class ChatGptBrowserWorker {
               await stop.waitFor({ state: "hidden", timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS }).catch(() => {});
             }
 
-            mode = await this.runStage(
-              turn.traceId,
-              `multipart_stage_${index + 1}_ack_recovery_effort_selection`,
-              browserStageTimeouts.effortSelection,
-              selectStagingMode,
-            );
+            await ensureStagingMode(`multipart_stage_${index + 1}_ack_recovery_effort_selection`);
             const recoveryPrompt = formatChatGptWebMultipartAcknowledgementRecovery(stage);
             let recoveryBaseline = await this.captureSubmissionBaseline(page, recoveryPrompt);
             await this.runStage(
@@ -5444,7 +5511,7 @@ export class ChatGptBrowserWorker {
                 turn.abortSignal ? AbortSignal.any([stageSignal, turn.abortSignal]) : stageSignal,
                 undefined,
                 { onSubmitted: recordRecoveryUsage, onSendActivated: async () => {
-                  await this.assertSelectedEffort(page, mode);
+                  await this.assertSelectedEffort(page, mode, false);
                   submissionRejection.begin(page);
                 } },
                 undefined,
@@ -5464,6 +5531,7 @@ export class ChatGptBrowserWorker {
             await awaitStageAcknowledgement(
               `multipart_stage_${index + 1}_ack_recovery_acknowledgement`,
               recoveryBaseline,
+              browserStageTimeouts.multipartStageRecoveryAcknowledgement,
             );
             await diagnostics.capture(page, `multipart-stage-${index + 1}-ack-recovered`);
           }

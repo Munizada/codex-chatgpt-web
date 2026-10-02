@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import {
   CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS,
+  browserStageTimeouts,
   chatGptExternalProgressSuppressesDomHealth,
   chatGptExternalToolCallsVetoCompletion,
   chatGptNewTurnIdentity,
@@ -56,6 +57,11 @@ test("stale unresolved MCP activity stops vetoing browser completion", () => {
   )).toBeFalse();
 });
 
+test("multipart receipt waits are bounded for fast recovery", () => {
+  expect(browserStageTimeouts.multipartStageAcknowledgement).toBe(45_000);
+  expect(browserStageTimeouts.multipartStageRecoveryAcknowledgement).toBe(20_000);
+});
+
 test("multipart acknowledgement recovery carries only the transaction receipt", () => {
   const transactionId = "ctx_0123456789abcdef0123456789abcdef";
   const payload = JSON.stringify({ secret_marker: "DO_NOT_REPEAT_STAGE_PAYLOAD" });
@@ -80,6 +86,9 @@ test("fork-only recovery paths remain wired on top of the 6.1.4 browser worker",
   expect(worker).toContain("Preserve the running-stall timer across a transport-only rebind");
   expect(worker).toContain("Preserve the quiescent-stall timer across a transport-only rebind");
   expect(worker).toContain("ack_recovery_acknowledgement");
+  expect(worker).toContain("submittedUserTurnIdentity");
+  expect(worker).toContain("reused proven staging model selection");
+  expect(worker).toContain("multipartStageRecoveryAcknowledgement");
   expect(worker).toContain('error.code === "multipart_protocol_violation"');
   expect(worker).toContain(
     "chatGptExternalProgressSuppressesDomHealth(rebindProgressSnapshot, Date.now())",

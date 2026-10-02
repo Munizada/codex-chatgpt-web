@@ -96,14 +96,26 @@ Relevant commits:
 Observed failure modes:
 
 - staged part accepted but acknowledgement response timed out;
-- staged part accepted but ChatGPT returned the wrong acknowledgement.
+- staged part accepted but ChatGPT returned the wrong acknowledgement;
+- the renderer briefly exposed two new user-turn identities during one physical
+  staged Send, causing the whole multipart attempt to restart;
+- repeated full model-picker selection between inert stages added avoidable UI
+  latency.
 
 Fork behavior:
 
 - never replay the already accepted large staged payload merely because its ACK
   failed;
+- primary ACK waits are bounded to **45 seconds** and receipt-recovery ACK waits
+  to **20 seconds** instead of consuming the full 180-second DOM grace;
 - request only the exact missing transaction receipt in the same conversation;
 - accept the recovery only when the exact expected ACK is observed;
+- when multiple new user identities appear during Send, accept one only if its
+  message-content target exactly matches the submitted prompt; ambiguity still
+  fails closed;
+- reuse an already-proven staging model/effort selection on the same surface
+  with a lightweight semantic check, re-selecting only when that proof no
+  longer holds;
 - otherwise fail closed.
 
 Relevant commits:
@@ -131,6 +143,10 @@ When diagnosing slow tasks, separate:
 3. browser/bridge waiting and recovery time.
 
 Only category 3 is considered avoidable bridge overhead.
+
+Current multipart performance policy additionally avoids 180-second receipt
+stalls, full-transaction restart on a safely disambiguated renderer re-key, and
+redundant full model-picker verification on every inert context part.
 
 ## Validation contract
 
