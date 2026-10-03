@@ -4402,12 +4402,14 @@ test("a staged Bigger Context part keeps a large send budget but recovers stalle
   // Once the user message is accepted, acknowledgement is only a transaction receipt. It should
   // recover much sooner than the large-payload send/DOM budget, and the tiny recovery receipt gets
   // an even smaller bounded window.
-  expect(browserStageTimeouts.multipartStageAcknowledgement).toBe(45_000);
+  expect(browserStageTimeouts.multipartInitialStageAcknowledgement)
+    .toBe(CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS);
+  expect(browserStageTimeouts.multipartStageAcknowledgement).toBe(60_000);
   expect(browserStageTimeouts.multipartStageRecoveryAcknowledgement).toBe(20_000);
   expect(browserStageTimeouts.multipartStageRecoveryAcknowledgement)
     .toBeLessThan(browserStageTimeouts.multipartStageAcknowledgement);
   expect(browserStageTimeouts.multipartStageAcknowledgement)
-    .toBeLessThan(browserStageTimeouts.multipartStageSend);
+    .toBeLessThan(browserStageTimeouts.multipartInitialStageAcknowledgement);
 });
 
 test("the suspension clock charges only tick gaps that mean the process was frozen", () => {

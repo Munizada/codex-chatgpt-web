@@ -106,8 +106,12 @@ Fork behavior:
 
 - never replay the already accepted large staged payload merely because its ACK
   failed;
-- primary ACK waits are bounded to **45 seconds** and receipt-recovery ACK waits
-  to **20 seconds** instead of consuming the full 180-second DOM grace;
+- the first staged ACK keeps the full **180-second** headroom because historical
+  successful first-part receipts have legitimately taken roughly 160 seconds;
+- later staged ACKs use a **60-second** window: across the reviewed diagnostics,
+  successful parts 2-5 stayed below roughly 52 seconds;
+- receipt-recovery ACK waits use **20 seconds** because the recovery prompt is
+  tiny and observed successful recovery receipts stayed below roughly 10 seconds;
 - request only the exact missing transaction receipt in the same conversation;
 - accept the recovery only when the exact expected ACK is observed;
 - when multiple new user identities appear during Send, accept one only if its
@@ -144,9 +148,11 @@ When diagnosing slow tasks, separate:
 
 Only category 3 is considered avoidable bridge overhead.
 
-Current multipart performance policy additionally avoids 180-second receipt
-stalls, full-transaction restart on a safely disambiguated renderer re-key, and
-redundant full model-picker verification on every inert context part.
+Current multipart performance policy avoids 180-second receipt stalls on
+follow-up parts, full-transaction restart on a safely disambiguated renderer
+re-key, and redundant full model-picker verification on every inert context
+part. The first staged receipt deliberately keeps the larger historical safety
+window rather than trading reliability for a few seconds.
 
 ## Validation contract
 

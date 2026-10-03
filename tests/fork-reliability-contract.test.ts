@@ -57,8 +57,9 @@ test("stale unresolved MCP activity stops vetoing browser completion", () => {
   )).toBeFalse();
 });
 
-test("multipart receipt waits are bounded for fast recovery", () => {
-  expect(browserStageTimeouts.multipartStageAcknowledgement).toBe(45_000);
+test("multipart receipt waits preserve first-stage headroom but recover later stalls quickly", () => {
+  expect(browserStageTimeouts.multipartInitialStageAcknowledgement).toBe(180_000);
+  expect(browserStageTimeouts.multipartStageAcknowledgement).toBe(60_000);
   expect(browserStageTimeouts.multipartStageRecoveryAcknowledgement).toBe(20_000);
 });
 
@@ -88,6 +89,8 @@ test("fork-only recovery paths remain wired on top of the 6.1.4 browser worker",
   expect(worker).toContain("ack_recovery_acknowledgement");
   expect(worker).toContain("submittedUserTurnIdentity");
   expect(worker).toContain("reused proven staging model selection");
+  expect(worker).toContain("multipartInitialStageAcknowledgement");
+  expect(worker).toContain("acknowledgementTimeoutMs = index === 0");
   expect(worker).toContain("multipartStageRecoveryAcknowledgement");
   expect(worker).toContain('error.code === "multipart_protocol_violation"');
   expect(worker).toContain(

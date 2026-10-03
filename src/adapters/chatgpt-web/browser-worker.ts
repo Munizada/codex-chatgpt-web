@@ -1164,7 +1164,8 @@ export const browserStageTimeouts = {
   // Staging asks for one transaction-bound receipt, not an open-ended model answer. Once the
   // user message is accepted the large payload is already in conversation history, so a stalled
   // receipt can be recovered safely instead of burning the full 180-second DOM grace.
-  multipartStageAcknowledgement: 45_000,
+  multipartInitialStageAcknowledgement: CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS,
+  multipartStageAcknowledgement: 60_000,
   multipartStageRecoveryAcknowledgement: 20_000,
 } as const;
 
@@ -5435,8 +5436,15 @@ export class ChatGptBrowserWorker {
               true,
             );
           };
+          const acknowledgementTimeoutMs = index === 0
+            ? browserStageTimeouts.multipartInitialStageAcknowledgement
+            : browserStageTimeouts.multipartStageAcknowledgement;
           try {
-            await awaitStageAcknowledgement(acknowledgementStage, stageBaseline);
+            await awaitStageAcknowledgement(
+              acknowledgementStage,
+              stageBaseline,
+              acknowledgementTimeoutMs,
+            );
           } catch (error) {
             const acknowledgementTimedOut = error instanceof Error
               && error.message === `ChatGPT browser stage timed out: ${acknowledgementStage}`;
