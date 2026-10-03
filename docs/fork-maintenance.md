@@ -154,6 +154,24 @@ re-key, and redundant full model-picker verification on every inert context
 part. The first staged receipt deliberately keeps the larger historical safety
 window rather than trading reliability for a few seconds.
 
+## Temporary dependency-audit exception
+
+As of 2026-10-03, GitHub Advisory `GHSA-ch52-4w7c-c8xp` affects
+`http-cache-semantics <=4.2.0` and has no published patched npm version. In
+this repository it is reachable only through launcher build-time
+`devDependencies` (`electron -> @electron/get -> got -> cacheable-request`
+and the equivalent `electron-builder` path).
+
+The launcher audit therefore:
+
+1. runs `bun audit --prod` with no exception for shipped production
+   dependencies;
+2. runs the full audit while ignoring only
+   `GHSA-ch52-4w7c-c8xp`.
+
+Any other production or development advisory still fails verification. Remove
+this exception as soon as a patched dependency chain is published.
+
 ## Validation contract
 
 Before publishing a patched Windows executable:
