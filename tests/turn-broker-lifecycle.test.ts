@@ -519,6 +519,54 @@ test("a delivered tool timeout is isolated until its late native result settles"
   }
 });
 
+test("a delivered timed-out invocation retires the turn if native settlement never arrives", async () => {
+  const root = mkdtempSync(join(tmpdir(), "cgw-ag-"));
+  const socketPath = defaultBrokerEndpoint(root);
+  const broker = TurnBroker.forSocket(socketPath, { abandonedToolSettlementGraceMs: 25 });
+  try {
+    const token = await broker.register({
+      cwd: root,
+      roots: [root],
+      writableRoots: [root],
+      sandboxPolicy: { type: "dangerFullAccess" },
+      tools: [],
+    }, undefined, "trace_abandon_grace");
+    const claimed = await callTurnBroker<{ bindingId: string; activityId: string }>(
+      socketPath,
+      { method: "claim", token },
+    );
+    const callId = "call_abandonedGrace1234567890123";
+    const invocation = callTurnBroker(
+      socketPath,
+      {
+        method: "invoke",
+        bindingId: claimed.bindingId,
+        callId,
+        wireName: "never_settles",
+        freeform: false,
+        arguments: {},
+      },
+      null,
+    );
+    await broker.nextToolBatch(token);
+    const rejectedInvocation = expect(invocation).rejects.toThrow("exceeded its MCP transport deadline");
+    const retirement = broker.waitForRetirement(token);
+    await expect(callTurnBroker(socketPath, {
+      method: "abandon_invoke",
+      bindingId: claimed.bindingId,
+      callId,
+      failure: { code: "codex_tool_timeout", tool: "never_settles", timeoutMs: 90_000 },
+    })).resolves.toEqual({ abandoned: true, delivered: true });
+    await rejectedInvocation;
+    const failure = await retirement;
+    expect(failure).toEqual({ code: "codex_tool_timeout", tool: "never_settles", timeoutMs: 90_000 });
+    await expect(callTurnBroker(socketPath, { method: "claim", token }))
+      .rejects.toThrow("already finished");
+  } finally {
+    await broker.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 test("timeout cleanup detects a native result that completed at the deadline boundary", async () => {
   const root = mkdtempSync(join(tmpdir(), "cgw-ar-"));
   const socketPath = defaultBrokerEndpoint(root);
