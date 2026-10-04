@@ -478,7 +478,10 @@ test("a delivered tool timeout is isolated until its late native result settles"
       expect.objectContaining({ callId, wireName: "mcp__agent_browser__agent_browser_open" }),
     ]);
 
-    const rejectedInvocation = expect(invocation).rejects.toThrow("exceeded its MCP transport deadline");
+    const invocationOutcome = invocation.then(
+          value => ({ type: "value" as const, value }),
+          error => ({ type: "error" as const, error: error instanceof Error ? error : new Error(String(error)) }),
+        );
     await expect(callTurnBroker(socketPath, {
       method: "abandon_invoke",
       bindingId: claimed.bindingId,
@@ -489,7 +492,10 @@ test("a delivered tool timeout is isolated until its late native result settles"
         timeoutMs: 110_000,
       },
     })).resolves.toEqual({ abandoned: true, delivered: true });
-    await rejectedInvocation;
+    const settledInvocation = await invocationOutcome;
+        expect(settledInvocation.type).toBe("error");
+        if (settledInvocation.type !== "error") throw new Error("abandoned invocation unexpectedly resolved");
+        expect(settledInvocation.error.message).toContain("exceeded its MCP transport deadline");
 
     await callTurnBroker(socketPath, {
       method: "activity_complete",
@@ -549,7 +555,10 @@ test("a delivered timed-out invocation retires the turn if native settlement nev
       null,
     );
     await broker.nextToolBatch(token);
-    const rejectedInvocation = expect(invocation).rejects.toThrow("exceeded its MCP transport deadline");
+    const invocationOutcome = invocation.then(
+          value => ({ type: "value" as const, value }),
+          error => ({ type: "error" as const, error: error instanceof Error ? error : new Error(String(error)) }),
+        );
     const retirement = broker.waitForRetirement(token);
     await expect(callTurnBroker(socketPath, {
       method: "abandon_invoke",
@@ -557,7 +566,10 @@ test("a delivered timed-out invocation retires the turn if native settlement nev
       callId,
       failure: { code: "codex_tool_timeout", tool: "never_settles", timeoutMs: 90_000 },
     })).resolves.toEqual({ abandoned: true, delivered: true });
-    await rejectedInvocation;
+    const settledInvocation = await invocationOutcome;
+        expect(settledInvocation.type).toBe("error");
+        if (settledInvocation.type !== "error") throw new Error("abandoned invocation unexpectedly resolved");
+        expect(settledInvocation.error.message).toContain("exceeded its MCP transport deadline");
     const failure = await retirement;
     expect(failure).toEqual({ code: "codex_tool_timeout", tool: "never_settles", timeoutMs: 90_000 });
     await expect(callTurnBroker(socketPath, { method: "claim", token }))
@@ -653,14 +665,20 @@ test("an undelivered timed-out invocation is removed without poisoning the turn"
       null,
     );
 
-    const rejectedInvocation = expect(invocation).rejects.toThrow("exceeded its MCP transport deadline");
+    const invocationOutcome = invocation.then(
+          value => ({ type: "value" as const, value }),
+          error => ({ type: "error" as const, error: error instanceof Error ? error : new Error(String(error)) }),
+        );
     await expect(callTurnBroker(socketPath, {
       method: "abandon_invoke",
       bindingId: claimed.bindingId,
       callId,
       failure: { code: "codex_tool_timeout", tool: "slow_tool", timeoutMs: 90_000 },
     })).resolves.toEqual({ abandoned: true, delivered: false });
-    await rejectedInvocation;
+    const settledInvocation = await invocationOutcome;
+        expect(settledInvocation.type).toBe("error");
+        if (settledInvocation.type !== "error") throw new Error("abandoned invocation unexpectedly resolved");
+        expect(settledInvocation.error.message).toContain("exceeded its MCP transport deadline");
     await callTurnBroker(socketPath, {
       method: "activity_complete",
       token,
