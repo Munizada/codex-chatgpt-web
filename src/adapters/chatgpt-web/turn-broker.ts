@@ -10,6 +10,8 @@ import {
 import type { ChatGptTurnEnvironment } from "./environment";
 import { chatGptToolTimeoutError } from "./adapter-error";
 
+export const CHATGPT_WEB_ABANDONED_TOOL_SETTLEMENT_GRACE_MS = 30_000;
+
 interface BrokerRetirementFailure {
   code: "codex_tool_timeout";
   tool: string;
@@ -91,6 +93,8 @@ interface TurnChannel {
    * become a completed turn while a side effect is still unresolved.
    */
   abandonedCallIds: Set<string>;
+  /** Bounded cleanup for delivered calls whose MCP caller already returned a timeout. */
+  abandonedTimers: Map<string, ReturnType<typeof setTimeout>>;
   /** Tool calls that settled natively, retained only as ids to resolve timeout-boundary races. */
   completedCallIds: Set<string>;
   waiters: Set<ToolWaiter>;
@@ -265,11 +269,21 @@ export interface TurnBrokerOwner {
 const MAX_UNIX_SOCKET_PATH_BYTES = 103;
 
 export class TurnBroker implements TurnBrokerOwner {
-  static forSocket(path: string): TurnBroker {
+  static forSocket(
+    path: string,
+    options: { abandonedToolSettlementGraceMs?: number } = {},
+  ): TurnBroker {
     let broker = brokers.get(path);
+    const graceMs = options.abandonedToolSettlementGraceMs ?? CHATGPT_WEB_ABANDONED_TOOL_SETTLEMENT_GRACE_MS;
+    if (!Number.isFinite(graceMs) || graceMs <= 0) {
+      throw new Error("ChatGPT web abandoned-tool settlement grace must be a positive finite number");
+    }
     if (!broker) {
-      broker = new TurnBroker(path);
+      broker = new TurnBroker(path, graceMs);
       brokers.set(path, broker);
+    } else if (options.abandonedToolSettlementGraceMs !== undefined
+      && broker.abandonedToolSettlementGraceMs !== graceMs) {
+      throw new Error("ChatGPT web broker already exists with a different abandoned-tool settlement grace");
     }
     return broker;
   }
@@ -288,7 +302,10 @@ export class TurnBroker implements TurnBrokerOwner {
   private startPromise?: Promise<void>;
   private socketIdentity?: { dev: number; ino: number };
 
-  private constructor(readonly socketPath: string) {}
+  private constructor(
+    readonly socketPath: string,
+    private readonly abandonedToolSettlementGraceMs: number,
+  ) {}
 
   /**
    * A ChatGPT turn outlives the request that started it, and its Codex Native calls arrive from a
@@ -327,6 +344,7 @@ export class TurnBroker implements TurnBrokerOwner {
       deliveredCallIds: new Set(),
       invocations: new Map(),
       abandonedCallIds: new Set(),
+      abandonedTimers: new Map(),
       completedCallIds: new Set(),
       waiters: new Set(),
       compactionRequested: false,
@@ -461,6 +479,9 @@ export class TurnBroker implements TurnBrokerOwner {
     if (channel.abandonedCallIds.delete(callId)) {
       // ChatGPT already received a timeout for this invocation. The late native result still
       // settles lifecycle ownership, but must not be injected into a different model action.
+      const timer = channel.abandonedTimers.get(callId);
+      if (timer) clearTimeout(timer);
+      channel.abandonedTimers.delete(callId);
       channel.completedCallIds.add(callId);
       channel.activityRevision += 1;
       console.info(
@@ -1205,7 +1226,30 @@ export class TurnBroker implements TurnBrokerOwner {
       const queuedIndex = channel.queuedCallIds.indexOf(callId);
       if (queuedIndex >= 0) channel.queuedCallIds.splice(queuedIndex, 1);
       channel.invocations.delete(callId);
-      if (delivered) channel.abandonedCallIds.add(callId);
+      if (delivered) {
+        channel.abandonedCallIds.add(callId);
+        const failure = request.failure;
+        const timer = setTimeout(() => {
+          const liveChannel = this.channels.get(binding.token);
+          if (liveChannel !== channel || !channel.abandonedCallIds.has(callId)) return;
+          channel.abandonedTimers.delete(callId);
+          console.error(
+            `[chatgpt-web] broker trace=${channel.traceId} abandoned call=${callId.slice(0, 17)}`
+            + ` did not settle within ${this.abandonedToolSettlementGraceMs}ms; retiring turn`,
+          );
+          if (failure?.code === "codex_tool_timeout") {
+            this.revoke(
+              binding.token,
+              chatGptToolTimeoutError(failure.tool, failure.timeoutMs),
+              failure,
+            );
+          } else {
+            this.revoke(binding.token, new Error("Abandoned Codex tool invocation did not settle before its grace deadline"));
+          }
+        }, this.abandonedToolSettlementGraceMs);
+        timer.unref?.();
+        channel.abandonedTimers.set(callId, timer);
+      }
       channel.activityRevision += 1;
       invocation.reject(new Error(
         request.failure?.code === "codex_tool_timeout"
@@ -1311,6 +1355,8 @@ export class TurnBroker implements TurnBrokerOwner {
     channel.queuedCallIds = [];
     channel.deliveredCallIds.clear();
     channel.abandonedCallIds.clear();
+    for (const timer of channel.abandonedTimers.values()) clearTimeout(timer);
+    channel.abandonedTimers.clear();
     channel.completedCallIds.clear();
   }
 
