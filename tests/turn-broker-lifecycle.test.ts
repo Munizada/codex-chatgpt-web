@@ -472,7 +472,7 @@ test("a delivered tool timeout is isolated until its late native result settles"
         freeform: false,
         arguments: { url: "https://example.invalid" },
       },
-      null,
+      2_000,
     );
     await expect(broker.nextToolBatch(token)).resolves.toEqual([
       expect.objectContaining({ callId, wireName: "mcp__agent_browser__agent_browser_open" }),
@@ -552,7 +552,7 @@ test("a delivered timed-out invocation retires the turn if native settlement nev
         freeform: false,
         arguments: {},
       },
-      null,
+      2_000,
     );
     await broker.nextToolBatch(token);
     const invocationOutcome = invocation.then(
@@ -606,7 +606,7 @@ test("timeout cleanup detects a native result that completed at the deadline bou
         freeform: false,
         arguments: {},
       },
-      null,
+      2_000,
     );
     await broker.nextToolBatch(token);
     broker.completeTool(token, callId, {
@@ -662,7 +662,7 @@ test("an undelivered timed-out invocation is removed without poisoning the turn"
         freeform: false,
         arguments: {},
       },
-      null,
+      2_000,
     );
 
     const invocationOutcome = invocation.then(
