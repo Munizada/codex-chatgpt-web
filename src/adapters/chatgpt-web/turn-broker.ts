@@ -85,6 +85,12 @@ interface TurnChannel {
   queuedCallIds: string[];
   deliveredCallIds: Set<string>;
   invocations: Map<string, PendingInvocation>;
+  /**
+   * Invocations whose MCP caller hit its transport deadline after native delivery.
+   * Keep the call id until its late native result arrives so a timeout cannot silently
+   * become a completed turn while a side effect is still unresolved.
+   */
+  abandonedCallIds: Set<string>;
   waiters: Set<ToolWaiter>;
   compactionRequested: boolean;
   compactionResult?: BrokerToolResult;
@@ -109,6 +115,7 @@ interface BrokerRequest {
     | "resolve"
     | "release"
     | "invoke"
+    | "abandon_invoke"
     | "owner_status"
     | "owner_register"
     | "owner_register_safe"
@@ -317,6 +324,7 @@ export class TurnBroker implements TurnBrokerOwner {
       queuedCallIds: [],
       deliveredCallIds: new Set(),
       invocations: new Map(),
+      abandonedCallIds: new Set(),
       waiters: new Set(),
       compactionRequested: false,
       compactionDeliveryCount: 0,
@@ -447,6 +455,16 @@ export class TurnBroker implements TurnBrokerOwner {
     const channel = this.channels.get(token);
     if (!channel) throw new Error("turn token is invalid or expired");
     this.assertSafeHarnessRunning(channel, true);
+    if (channel.abandonedCallIds.delete(callId)) {
+      // ChatGPT already received a timeout for this invocation. The late native result still
+      // settles lifecycle ownership, but must not be injected into a different model action.
+      channel.activityRevision += 1;
+      console.info(
+        `[chatgpt-web] broker trace=${channel.traceId} settled abandoned call=${callId.slice(0, 17)}`
+        + ` pending=${channel.invocations.size} abandoned=${channel.abandonedCallIds.size}`,
+      );
+      return;
+    }
     const invocation = channel.invocations.get(callId);
     if (!invocation) throw new Error(`tool call is not pending: ${callId}`);
     if (!channel.deliveredCallIds.delete(callId)) {
@@ -462,7 +480,7 @@ export class TurnBroker implements TurnBrokerOwner {
     const channel = this.channels.get(token);
     if (!channel) throw new Error("turn token is invalid or expired");
     if (channel.completionCommitted) return channel.completionRevision;
-    if (channel.activities.size > 0 || channel.invocations.size > 0) return undefined;
+    if (channel.activities.size > 0 || channel.invocations.size > 0 || channel.abandonedCallIds.size > 0) return undefined;
     return channel.activityRevision;
   }
 
@@ -476,7 +494,8 @@ export class TurnBroker implements TurnBrokerOwner {
     if (channel.completionCommitted) return channel.completionRevision === revision;
     if (channel.activityRevision !== revision
       || channel.activities.size > 0
-      || channel.invocations.size > 0) return false;
+      || channel.invocations.size > 0
+      || channel.abandonedCallIds.size > 0) return false;
     channel.completionCommitted = true;
     channel.completionRevision = revision;
     console.info(
@@ -499,6 +518,11 @@ export class TurnBroker implements TurnBrokerOwner {
     this.assertSafeHarnessRunning(channel);
     if (channel.compactionRequested) {
       throw new Error("Codex context compaction was already requested for this turn");
+    }
+    if (channel.abandonedCallIds.size > 0) {
+      throw new Error(
+        `Codex context compaction cannot start with ${channel.abandonedCallIds.size} abandoned native tool invocation(s) still unsettled`,
+      );
     }
     channel.compactionRequested = true;
     channel.compactionResult = structuredClone(queuedResult);
@@ -584,6 +608,9 @@ export class TurnBroker implements TurnBrokerOwner {
     if (channel.invocations.size > 0) {
       throw new Error(`Zero Risk turn cannot complete with ${channel.invocations.size} pending Codex tool invocation(s)`);
     }
+    if (channel.abandonedCallIds.size > 0) {
+      throw new Error(`Zero Risk turn cannot complete with ${channel.abandonedCallIds.size} abandoned Codex tool invocation(s) still unsettled`);
+    }
     if (channel.activities.size > 0) {
       throw new Error(`Zero Risk turn cannot complete with ${channel.activities.size} active Codex MCP request(s)`);
     }
@@ -635,6 +662,7 @@ export class TurnBroker implements TurnBrokerOwner {
       pendingTools: channel.invocations.size,
       queuedTools: channel.queuedCallIds.length,
       deliveredTools: channel.deliveredCallIds.size,
+      abandonedTools: channel.abandonedCallIds.size,
       activeMcpRequests: channel.activities.size,
       completionCommitted: channel.completionCommitted,
       ...(failure ? { failure } : {}),
@@ -920,7 +948,7 @@ export class TurnBroker implements TurnBrokerOwner {
     if (!request || typeof request !== "object" || typeof request.id !== "string" || request.id.length === 0 || request.id.length > 256) {
       throw new Error("turn broker request id is invalid");
     }
-    if (!["claim", "resolve", "release", "invoke", "owner_status", "owner_register", "owner_register_safe", "owner_update", "owner_safe_sent", "owner_next", "owner_complete", "owner_completion_fence_begin", "owner_completion_fence_commit", "owner_wait_retirement", "owner_revoke", "owner_safe_wait_start", "owner_safe_wait_completion", "owner_request_compaction", "owner_compaction_delivery_count", "safe_start", "safe_complete", "activity_complete", "submit_compaction_handoff"].includes(request.method)) {
+    if (!["claim", "resolve", "release", "invoke", "abandon_invoke", "owner_status", "owner_register", "owner_register_safe", "owner_update", "owner_safe_sent", "owner_next", "owner_complete", "owner_completion_fence_begin", "owner_completion_fence_commit", "owner_wait_retirement", "owner_revoke", "owner_safe_wait_start", "owner_safe_wait_completion", "owner_request_compaction", "owner_compaction_delivery_count", "safe_start", "safe_complete", "activity_complete", "submit_compaction_handoff"].includes(request.method)) {
       throw new Error("turn broker method is invalid");
     }
   }
@@ -1133,6 +1161,9 @@ export class TurnBroker implements TurnBrokerOwner {
       if (request.method === "release" && retiredTurn !== undefined) {
         return { released: true, duplicate: true };
       }
+      if (request.method === "abandon_invoke" && retiredTurn !== undefined) {
+        return { abandoned: false, retired: true };
+      }
       console.error(
         `[chatgpt-web] broker rejected ${request.method} (binding=${bindingId.slice(0, 17)},`
         + ` retiredTurn=${retiredTurn ?? "unknown"})`,
@@ -1150,6 +1181,36 @@ export class TurnBroker implements TurnBrokerOwner {
       }
       return { released: true };
     }
+    if (request.method === "abandon_invoke") {
+      const callId = request.callId;
+      if (typeof callId !== "string" || !/^call_[A-Za-z0-9_-]{16,128}$/.test(callId)) {
+        throw new Error("tool call id is invalid");
+      }
+      if (request.failure !== undefined) assertRetirementFailure(request.failure);
+      const channel = binding.channel;
+      if (channel.abandonedCallIds.has(callId)) {
+        return { abandoned: true, delivered: true, duplicate: true };
+      }
+      const invocation = channel.invocations.get(callId);
+      if (!invocation) return { abandoned: false };
+      const delivered = channel.deliveredCallIds.delete(callId);
+      const queuedIndex = channel.queuedCallIds.indexOf(callId);
+      if (queuedIndex >= 0) channel.queuedCallIds.splice(queuedIndex, 1);
+      channel.invocations.delete(callId);
+      if (delivered) channel.abandonedCallIds.add(callId);
+      channel.activityRevision += 1;
+      invocation.reject(new Error(
+        request.failure?.code === "codex_tool_timeout"
+          ? `Codex tool ${request.failure.tool} exceeded its MCP transport deadline`
+          : "Codex tool invocation was abandoned by its MCP caller",
+      ));
+      console.info(
+        `[chatgpt-web] broker trace=${channel.traceId} abandoned call=${callId.slice(0, 17)}`
+        + ` tool=${invocation.request.wireName} delivered=${delivered}`
+        + ` pending=${channel.invocations.size} abandoned=${channel.abandonedCallIds.size}`,
+      );
+      return { abandoned: true, delivered };
+    }
     if (request.method === "resolve") return { environment: binding.channel.environment };
     this.assertSafeHarnessRunning(binding.channel);
     if (binding.channel.compactionRequested) {
@@ -1164,7 +1225,11 @@ export class TurnBroker implements TurnBrokerOwner {
 
     const wireName = request.wireName?.trim();
     if (!wireName) throw new Error("wire tool name is required");
-    const callId = opaqueId("call");
+    const callId = request.callId ?? opaqueId("call");
+    if (!/^call_[A-Za-z0-9_-]{16,128}$/.test(callId)) throw new Error("tool call id is invalid");
+    if (binding.channel.invocations.has(callId) || binding.channel.abandonedCallIds.has(callId)) {
+      throw new Error(`tool call id is already in use: ${callId}`);
+    }
     const toolRequest: BrokerToolRequest = {
       callId,
       wireName,
@@ -1235,6 +1300,7 @@ export class TurnBroker implements TurnBrokerOwner {
     channel.invocations.clear();
     channel.queuedCallIds = [];
     channel.deliveredCallIds.clear();
+    channel.abandonedCallIds.clear();
   }
 
   private prune(): void {
