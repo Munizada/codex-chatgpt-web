@@ -518,6 +518,62 @@ test("a delivered tool timeout is isolated until its late native result settles"
   }
 });
 
+test("timeout cleanup detects a native result that completed at the deadline boundary", async () => {
+  const root = mkdtempSync(join(tmpdir(), "cgw-broker-abandon-race-"));
+  const socketPath = defaultBrokerEndpoint(root);
+  const broker = TurnBroker.forSocket(socketPath);
+  try {
+    const token = await broker.register({
+      cwd: root,
+      roots: [root],
+      writableRoots: [root],
+      sandboxPolicy: { type: "dangerFullAccess" },
+      tools: [],
+    }, 60_000, "trace_abandon_race");
+    const claimed = await callTurnBroker<{ bindingId: string; activityId: string }>(
+      socketPath,
+      { method: "claim", token },
+    );
+    const callId = "call_completedAtBoundary123456789";
+    const invocation = callTurnBroker(
+      socketPath,
+      {
+        method: "invoke",
+        bindingId: claimed.bindingId,
+        callId,
+        wireName: "side_effecting_tool",
+        freeform: false,
+        arguments: {},
+      },
+      null,
+    );
+    await broker.nextToolBatch(token);
+    broker.completeTool(token, callId, {
+      content: [{ type: "text", text: "completed" }],
+    });
+    await expect(invocation).resolves.toMatchObject({
+      content: [{ type: "text", text: "completed" }],
+    });
+
+    await expect(callTurnBroker(socketPath, {
+      method: "abandon_invoke",
+      bindingId: claimed.bindingId,
+      callId,
+      failure: { code: "codex_tool_timeout", tool: "side_effecting_tool", timeoutMs: 90_000 },
+    })).resolves.toEqual({ abandoned: false, delivered: true, completed: true });
+
+    await callTurnBroker(socketPath, {
+      method: "activity_complete",
+      token,
+      activityId: claimed.activityId,
+    });
+    expect(broker.beginCompletionFence(token)).toEqual(expect.any(Number));
+  } finally {
+    await broker.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("an undelivered timed-out invocation is removed without poisoning the turn", async () => {
   const root = mkdtempSync(join(tmpdir(), "cgw-broker-abandon-queued-"));
   const socketPath = defaultBrokerEndpoint(root);
