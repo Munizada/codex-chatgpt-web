@@ -443,3 +443,131 @@ test("turn broker names the finished turn that owns a replayed handle", async ()
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+
+test("a delivered tool timeout is isolated until its late native result settles", async () => {
+  const root = mkdtempSync(join(tmpdir(), "cgw-broker-abandon-delivered-"));
+  const socketPath = defaultBrokerEndpoint(root);
+  const broker = TurnBroker.forSocket(socketPath);
+  try {
+    const token = await broker.register({
+      cwd: root,
+      roots: [root],
+      writableRoots: [root],
+      sandboxPolicy: { type: "dangerFullAccess" },
+      tools: [],
+    }, 60_000, "trace_abandon");
+    const claimed = await callTurnBroker<{ bindingId: string; activityId: string }>(
+      socketPath,
+      { method: "claim", token },
+    );
+    const callId = "call_abandonedDelivered1234567890";
+    const invocation = callTurnBroker(
+      socketPath,
+      {
+        method: "invoke",
+        bindingId: claimed.bindingId,
+        callId,
+        wireName: "mcp__agent_browser__agent_browser_open",
+        freeform: false,
+        arguments: { url: "https://example.invalid" },
+      },
+      null,
+    );
+    await expect(broker.nextToolBatch(token)).resolves.toEqual([
+      expect.objectContaining({ callId, wireName: "mcp__agent_browser__agent_browser_open" }),
+    ]);
+
+    await expect(callTurnBroker(socketPath, {
+      method: "abandon_invoke",
+      bindingId: claimed.bindingId,
+      callId,
+      failure: {
+        code: "codex_tool_timeout",
+        tool: "mcp__agent_browser__agent_browser_open",
+        timeoutMs: 110_000,
+      },
+    })).resolves.toEqual({ abandoned: true, delivered: true });
+    await expect(invocation).rejects.toThrow("exceeded its MCP transport deadline");
+
+    await callTurnBroker(socketPath, {
+      method: "activity_complete",
+      token,
+      activityId: claimed.activityId,
+    });
+    expect(broker.beginCompletionFence(token)).toBeUndefined();
+
+    expect(() => broker.completeTool(token, callId, {
+      content: [{ type: "text", text: "late result" }],
+    })).not.toThrow();
+    expect(broker.beginCompletionFence(token)).toEqual(expect.any(Number));
+
+    const secondClaim = await callTurnBroker<{ bindingId: string; activityId: string }>(
+      socketPath,
+      { method: "claim", token },
+    );
+    expect(secondClaim.bindingId).toBe(claimed.bindingId);
+    await callTurnBroker(socketPath, {
+      method: "activity_complete",
+      token,
+      activityId: secondClaim.activityId,
+    });
+  } finally {
+    await broker.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an undelivered timed-out invocation is removed without poisoning the turn", async () => {
+  const root = mkdtempSync(join(tmpdir(), "cgw-broker-abandon-queued-"));
+  const socketPath = defaultBrokerEndpoint(root);
+  const broker = TurnBroker.forSocket(socketPath);
+  try {
+    const token = await broker.register({
+      cwd: root,
+      roots: [root],
+      writableRoots: [root],
+      sandboxPolicy: { type: "dangerFullAccess" },
+      tools: [],
+    }, 60_000, "trace_abandon_queued");
+    const claimed = await callTurnBroker<{ bindingId: string; activityId: string }>(
+      socketPath,
+      { method: "claim", token },
+    );
+    const callId = "call_abandonedQueued123456789012";
+    const invocation = callTurnBroker(
+      socketPath,
+      {
+        method: "invoke",
+        bindingId: claimed.bindingId,
+        callId,
+        wireName: "slow_tool",
+        freeform: false,
+        arguments: {},
+      },
+      null,
+    );
+
+    await expect(callTurnBroker(socketPath, {
+      method: "abandon_invoke",
+      bindingId: claimed.bindingId,
+      callId,
+      failure: { code: "codex_tool_timeout", tool: "slow_tool", timeoutMs: 90_000 },
+    })).resolves.toEqual({ abandoned: true, delivered: false });
+    await expect(invocation).rejects.toThrow("exceeded its MCP transport deadline");
+    await callTurnBroker(socketPath, {
+      method: "activity_complete",
+      token,
+      activityId: claimed.activityId,
+    });
+    expect(broker.beginCompletionFence(token)).toEqual(expect.any(Number));
+
+    const wait = new AbortController();
+    const pendingBatch = broker.nextToolBatch(token, wait.signal);
+    wait.abort();
+    await expect(pendingBatch).rejects.toThrow("tool wait aborted");
+  } finally {
+    await broker.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
