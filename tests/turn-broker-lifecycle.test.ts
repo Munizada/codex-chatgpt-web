@@ -522,7 +522,7 @@ test("a delivered tool timeout is isolated until its late native result settles"
 test("a delivered timed-out invocation retires the turn if native settlement never arrives", async () => {
   const root = mkdtempSync(join(tmpdir(), "cgw-ag-"));
   const socketPath = defaultBrokerEndpoint(root);
-  const broker = TurnBroker.forSocket(socketPath, { abandonedToolSettlementGraceMs: 25 });
+  const broker = TurnBroker.forSocket(socketPath, { abandonedToolSettlementGraceMs: 100 });
   try {
     const token = await broker.register({
       cwd: root,
