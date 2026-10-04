@@ -478,6 +478,7 @@ test("a delivered tool timeout is isolated until its late native result settles"
       expect.objectContaining({ callId, wireName: "mcp__agent_browser__agent_browser_open" }),
     ]);
 
+    const rejectedInvocation = expect(invocation).rejects.toThrow("exceeded its MCP transport deadline");
     await expect(callTurnBroker(socketPath, {
       method: "abandon_invoke",
       bindingId: claimed.bindingId,
@@ -488,7 +489,7 @@ test("a delivered tool timeout is isolated until its late native result settles"
         timeoutMs: 110_000,
       },
     })).resolves.toEqual({ abandoned: true, delivered: true });
-    await expect(invocation).rejects.toThrow("exceeded its MCP transport deadline");
+    await rejectedInvocation;
 
     await callTurnBroker(socketPath, {
       method: "activity_complete",
@@ -604,13 +605,14 @@ test("an undelivered timed-out invocation is removed without poisoning the turn"
       null,
     );
 
+    const rejectedInvocation = expect(invocation).rejects.toThrow("exceeded its MCP transport deadline");
     await expect(callTurnBroker(socketPath, {
       method: "abandon_invoke",
       bindingId: claimed.bindingId,
       callId,
       failure: { code: "codex_tool_timeout", tool: "slow_tool", timeoutMs: 90_000 },
     })).resolves.toEqual({ abandoned: true, delivered: false });
-    await expect(invocation).rejects.toThrow("exceeded its MCP transport deadline");
+    await rejectedInvocation;
     await callTurnBroker(socketPath, {
       method: "activity_complete",
       token,
