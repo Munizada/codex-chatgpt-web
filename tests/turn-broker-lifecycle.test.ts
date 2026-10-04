@@ -446,7 +446,7 @@ test("turn broker names the finished turn that owns a replayed handle", async ()
 
 
 test("a delivered tool timeout is isolated until its late native result settles", async () => {
-  const root = mkdtempSync(join(tmpdir(), "cgw-broker-abandon-delivered-"));
+  const root = mkdtempSync(join(tmpdir(), "cgw-ad-"));
   const socketPath = defaultBrokerEndpoint(root);
   const broker = TurnBroker.forSocket(socketPath);
   try {
@@ -519,7 +519,7 @@ test("a delivered tool timeout is isolated until its late native result settles"
 });
 
 test("timeout cleanup detects a native result that completed at the deadline boundary", async () => {
-  const root = mkdtempSync(join(tmpdir(), "cgw-broker-abandon-race-"));
+  const root = mkdtempSync(join(tmpdir(), "cgw-ar-"));
   const socketPath = defaultBrokerEndpoint(root);
   const broker = TurnBroker.forSocket(socketPath);
   try {
@@ -575,7 +575,7 @@ test("timeout cleanup detects a native result that completed at the deadline bou
 });
 
 test("an undelivered timed-out invocation is removed without poisoning the turn", async () => {
-  const root = mkdtempSync(join(tmpdir(), "cgw-broker-abandon-queued-"));
+  const root = mkdtempSync(join(tmpdir(), "cgw-aq-"));
   const socketPath = defaultBrokerEndpoint(root);
   const broker = TurnBroker.forSocket(socketPath);
   try {
