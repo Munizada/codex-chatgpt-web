@@ -20,8 +20,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   verify-linux:
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -34,6 +39,7 @@ jobs:
       - run: bun run verify
 
   build-windows:
+    timeout-minutes: 45
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6

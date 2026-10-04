@@ -57,7 +57,7 @@ export const CHATGPT_WEB_EXEC_MAX_YIELD_MS = 90_000;
 // write_stdin may advertise a much longer poll, but this bridge must settle before the
 // 110-second MCP cap so the tunnel has time to carry the result or a bounded error.
 export const CHATGPT_WEB_WRITE_STDIN_MAX_YIELD_MS = 90_000;
-export const CHATGPT_WEB_RELIABILITY_PATCH_REVISION = "v6.1.4-r2";
+export const CHATGPT_WEB_RELIABILITY_PATCH_REVISION = "v6.1.4-r3";
 
 const LONG_RUNNING_TOOL_SUFFIXES = [
   "exec",
@@ -65,6 +65,9 @@ const LONG_RUNNING_TOOL_SUFFIXES = [
   "shell_command",
   "write_stdin",
   "local_shell_run",
+  // Agent Browser open can include browser launch/navigation work and has reproduced beyond the
+  // ordinary 90-second bridge budget. Give it the same bounded headroom as command-like tools.
+  "agent_browser_open",
 ] as const;
 
 export function chatGptLongRunningToolName(name: string): boolean {
@@ -663,46 +666,86 @@ export async function runChatGptMcpServer(options: {
     targetToolName = wireName(tool),
   ) => {
     const timeoutMs = chatGptMcpInvocationTimeoutForTool(bound, targetToolName);
+    const callId = `call_${randomBytes(24).toString("base64url")}`;
     console.error(`[chatgpt-web-mcp] invoke ${chatGptInvocationDiagnostic(tool, payload, targetToolName, timeoutMs)}`);
     try {
       const response = await callTurnBroker<BrokerToolResult>(options.brokerSocketPath, {
         method: "invoke",
         bindingId,
+        callId,
         wireName: wireName(tool),
         freeform: tool.freeform === true,
         ...(tool.freeform ? { input: payload.input ?? "" } : { arguments: payload.arguments ?? {} }),
       }, timeoutMs, signal);
       return asMcpResult(response);
     } catch (error) {
-      // A cancelled/timed-out MCP request no longer has a consumer for the native result. Revoke
-      // the whole turn capability so the broker drops the pending invocation and every later call
-      // from that abandoned ChatGPT response fails explicitly against its retired binding.
+      if (error instanceof TurnBrokerTimeoutError) {
+        let abandoned: { abandoned: boolean; delivered?: boolean; completed?: boolean; retired?: boolean };
+        try {
+          abandoned = await callTurnBroker(options.brokerSocketPath, {
+            method: "abandon_invoke",
+            bindingId,
+            callId,
+            failure: { code: "codex_tool_timeout" as const, tool: targetToolName, timeoutMs },
+          });
+        } catch (abandonError) {
+          // Fail closed against an older/incompatible broker. If isolated abandonment cannot be
+          // recorded, preserve the previous whole-binding retirement instead of losing track of
+          // a native side effect behind a tool error.
+          try {
+            await callTurnBroker(options.brokerSocketPath, {
+              method: "release",
+              bindingId,
+              failure: { code: "codex_tool_timeout" as const, tool: targetToolName, timeoutMs },
+            });
+          } catch (releaseError) {
+            throw new AggregateError(
+              [error, abandonError, releaseError],
+              "Codex Native invocation timed out and neither isolated abandonment nor safe binding retirement succeeded",
+            );
+          }
+          throw new AggregateError(
+            [error, abandonError],
+            "Codex Native invocation timed out and could not be isolated; the turn binding was retired",
+          );
+        }
+
+        const completedAtBoundary = abandoned.completed === true;
+        const delivered = abandoned.delivered === true || completedAtBoundary;
+        const turnRetired = abandoned.retired === true;
+        console.error(
+          `[chatgpt-web-mcp] ${targetToolName} did not complete within ${timeoutMs}ms;`
+          + ` isolated call=${callId.slice(0, 17)} delivered=${delivered}`
+          + ` completedAtBoundary=${completedAtBoundary} turnRetired=${turnRetired}`,
+        );
+        return result({
+          code: "codex_tool_timeout",
+          tool: targetToolName,
+          timeout_ms: timeoutMs,
+          retryable: !delivered && !turnRetired,
+          turn_retired: turnRetired,
+          native_result_pending: delivered && !completedAtBoundary,
+          native_result_completed_at_boundary: completedAtBoundary,
+          message: turnRetired
+            ? `Codex tool ${targetToolName} exceeded the MCP transport deadline after the turn was already retired.`
+            : completedAtBoundary
+              ? `Codex tool ${targetToolName} completed at the MCP timeout boundary, but its result missed the transport deadline. The current turn remains active; verify the action state instead of repeating it blindly.`
+              : delivered
+                ? `Codex tool ${targetToolName} exceeded the MCP transport deadline. Only this invocation was abandoned; the current turn remains active. The native action may still finish later, so do not repeat a potentially side-effecting action unless its state is verified first.`
+                : `Codex tool ${targetToolName} exceeded the MCP transport deadline before native delivery. Only this invocation was abandoned and the current turn remains active.`,
+        }, true);
+      }
+
+      // Cancellation or another transport failure means the MCP caller itself disappeared. There
+      // is no model waiting for a recoverable timeout result, so keep the existing fail-closed
+      // whole-turn retirement for those cases.
       try {
-        await callTurnBroker(options.brokerSocketPath, {
-          method: "release",
-          bindingId,
-          ...(error instanceof TurnBrokerTimeoutError ? {
-            failure: { code: "codex_tool_timeout" as const, tool: wireName(tool), timeoutMs },
-          } : {}),
-        });
+        await callTurnBroker(options.brokerSocketPath, { method: "release", bindingId });
       } catch (releaseError) {
         throw new AggregateError(
           [error, releaseError],
           "Codex Native invocation failed and its abandoned broker binding could not be retired",
         );
-      }
-      if (error instanceof TurnBrokerTimeoutError) {
-        const toolName = wireName(tool);
-        console.error(
-          `[chatgpt-web-mcp] ${toolName} did not complete within ${timeoutMs}ms; retired its turn binding`,
-        );
-        return result({
-          code: "codex_tool_timeout",
-          tool: toolName,
-          timeout_ms: timeoutMs,
-          retryable: false,
-          message: `Codex tool ${toolName} did not complete before the MCP transport deadline. The current turn binding was retired; do not retry it in this ChatGPT response.`,
-        }, true);
       }
       throw error;
     }

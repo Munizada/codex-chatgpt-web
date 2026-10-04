@@ -3516,8 +3516,10 @@ describe("ChatGPT outer-native harness v4", () => {
         code: "codex_tool_timeout",
         tool: "exec_command",
         retryable: false,
+        turn_retired: true,
       });
-      expect(JSON.stringify(timeoutResult.content)).toContain("did not complete before the MCP transport deadline");
+      expect(JSON.stringify(timeoutResult.content))
+        .toContain("exceeded the MCP transport deadline after the turn was already retired");
       await retirement;
       expect(externalProgress.snapshot().activeToolCalls).toBe(0);
       expect(chatGptExternalToolCallsAreInFlight(externalProgress.snapshot())).toBeFalse();

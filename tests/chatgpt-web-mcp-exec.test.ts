@@ -71,7 +71,7 @@ test("transport yield guard leaves unrelated tool arguments untouched", () => {
 
 test("long command-like MCP tools get bounded headroom below the two-minute tunnel", () => {
   const environment = {} as Parameters<typeof chatGptMcpInvocationTimeoutForTool>[0];
-  expect(CHATGPT_WEB_RELIABILITY_PATCH_REVISION).toBe("v6.1.4-r2");
+  expect(CHATGPT_WEB_RELIABILITY_PATCH_REVISION).toBe("v6.1.4-r3");
   expect(CHATGPT_WEB_LONG_TOOL_INVOCATION_TIMEOUT_MS).toBe(110_000);
   expect(CHATGPT_WEB_LONG_TOOL_INVOCATION_TIMEOUT_MS).toBeGreaterThan(CHATGPT_WEB_MCP_INVOCATION_TIMEOUT_MS);
   expect(CHATGPT_WEB_LONG_TOOL_INVOCATION_TIMEOUT_MS).toBeLessThan(120_000);
@@ -82,6 +82,7 @@ test("long command-like MCP tools get bounded headroom below the two-minute tunn
     "shell_command",
     "write_stdin",
     "mcp__codexLocalOps__local_shell_run",
+    "mcp__agent_browser__agent_browser_open",
   ]) {
     expect(chatGptLongRunningToolName(name)).toBeTrue();
     expect(chatGptMcpInvocationTimeoutForTool(environment, name, 0)).toBe(110_000);
