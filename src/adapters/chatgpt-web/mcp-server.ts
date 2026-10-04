@@ -680,7 +680,7 @@ export async function runChatGptMcpServer(options: {
       return asMcpResult(response);
     } catch (error) {
       if (error instanceof TurnBrokerTimeoutError) {
-        let abandoned: { abandoned: boolean; delivered?: boolean; retired?: boolean };
+        let abandoned: { abandoned: boolean; delivered?: boolean; completed?: boolean; retired?: boolean };
         try {
           abandoned = await callTurnBroker(options.brokerSocketPath, {
             method: "abandon_invoke",
@@ -710,21 +710,29 @@ export async function runChatGptMcpServer(options: {
           );
         }
 
-        const delivered = abandoned.delivered === true;
+        const completedAtBoundary = abandoned.completed === true;
+        const delivered = abandoned.delivered === true || completedAtBoundary;
+        const turnRetired = abandoned.retired === true;
         console.error(
           `[chatgpt-web-mcp] ${targetToolName} did not complete within ${timeoutMs}ms;`
-          + ` isolated call=${callId.slice(0, 17)} delivered=${delivered} turnRetired=${abandoned.retired === true}`,
+          + ` isolated call=${callId.slice(0, 17)} delivered=${delivered}`
+          + ` completedAtBoundary=${completedAtBoundary} turnRetired=${turnRetired}`,
         );
         return result({
           code: "codex_tool_timeout",
           tool: targetToolName,
           timeout_ms: timeoutMs,
-          retryable: !delivered,
-          turn_retired: abandoned.retired === true,
-          native_result_pending: delivered,
-          message: delivered
-            ? `Codex tool ${targetToolName} exceeded the MCP transport deadline. Only this invocation was abandoned; the current turn remains active. The native action may still finish later, so do not repeat a potentially side-effecting action unless its state is verified first.`
-            : `Codex tool ${targetToolName} exceeded the MCP transport deadline before native delivery. Only this invocation was abandoned and the current turn remains active.`,
+          retryable: !delivered && !turnRetired,
+          turn_retired: turnRetired,
+          native_result_pending: delivered && !completedAtBoundary,
+          native_result_completed_at_boundary: completedAtBoundary,
+          message: turnRetired
+            ? `Codex tool ${targetToolName} exceeded the MCP transport deadline after the turn was already retired.`
+            : completedAtBoundary
+              ? `Codex tool ${targetToolName} completed at the MCP timeout boundary, but its result missed the transport deadline. The current turn remains active; verify the action state instead of repeating it blindly.`
+              : delivered
+                ? `Codex tool ${targetToolName} exceeded the MCP transport deadline. Only this invocation was abandoned; the current turn remains active. The native action may still finish later, so do not repeat a potentially side-effecting action unless its state is verified first.`
+                : `Codex tool ${targetToolName} exceeded the MCP transport deadline before native delivery. Only this invocation was abandoned and the current turn remains active.`,
         }, true);
       }
 
