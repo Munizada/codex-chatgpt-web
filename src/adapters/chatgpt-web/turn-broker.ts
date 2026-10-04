@@ -91,6 +91,8 @@ interface TurnChannel {
    * become a completed turn while a side effect is still unresolved.
    */
   abandonedCallIds: Set<string>;
+  /** Tool calls that settled natively, retained only as ids to resolve timeout-boundary races. */
+  completedCallIds: Set<string>;
   waiters: Set<ToolWaiter>;
   compactionRequested: boolean;
   compactionResult?: BrokerToolResult;
@@ -325,6 +327,7 @@ export class TurnBroker implements TurnBrokerOwner {
       deliveredCallIds: new Set(),
       invocations: new Map(),
       abandonedCallIds: new Set(),
+      completedCallIds: new Set(),
       waiters: new Set(),
       compactionRequested: false,
       compactionDeliveryCount: 0,
@@ -458,6 +461,7 @@ export class TurnBroker implements TurnBrokerOwner {
     if (channel.abandonedCallIds.delete(callId)) {
       // ChatGPT already received a timeout for this invocation. The late native result still
       // settles lifecycle ownership, but must not be injected into a different model action.
+      channel.completedCallIds.add(callId);
       channel.activityRevision += 1;
       console.info(
         `[chatgpt-web] broker trace=${channel.traceId} settled abandoned call=${callId.slice(0, 17)}`
@@ -471,6 +475,7 @@ export class TurnBroker implements TurnBrokerOwner {
       throw new Error(`tool call was completed before it was delivered: ${callId}`);
     }
     channel.invocations.delete(callId);
+    channel.completedCallIds.add(callId);
     console.info(`[chatgpt-web] broker trace=${channel.traceId} completed call=${callId.slice(0, 17)} pending=${channel.invocations.size}`);
     invocation.resolve(result);
   }
@@ -1191,8 +1196,11 @@ export class TurnBroker implements TurnBrokerOwner {
       if (channel.abandonedCallIds.has(callId)) {
         return { abandoned: true, delivered: true, duplicate: true };
       }
+      if (channel.completedCallIds.has(callId)) {
+        return { abandoned: false, delivered: true, completed: true };
+      }
       const invocation = channel.invocations.get(callId);
-      if (!invocation) return { abandoned: false };
+      if (!invocation) return { abandoned: false, delivered: false };
       const delivered = channel.deliveredCallIds.delete(callId);
       const queuedIndex = channel.queuedCallIds.indexOf(callId);
       if (queuedIndex >= 0) channel.queuedCallIds.splice(queuedIndex, 1);
@@ -1227,7 +1235,9 @@ export class TurnBroker implements TurnBrokerOwner {
     if (!wireName) throw new Error("wire tool name is required");
     const callId = request.callId ?? opaqueId("call");
     if (!/^call_[A-Za-z0-9_-]{16,128}$/.test(callId)) throw new Error("tool call id is invalid");
-    if (binding.channel.invocations.has(callId) || binding.channel.abandonedCallIds.has(callId)) {
+    if (binding.channel.invocations.has(callId)
+      || binding.channel.abandonedCallIds.has(callId)
+      || binding.channel.completedCallIds.has(callId)) {
       throw new Error(`tool call id is already in use: ${callId}`);
     }
     const toolRequest: BrokerToolRequest = {
@@ -1301,6 +1311,7 @@ export class TurnBroker implements TurnBrokerOwner {
     channel.queuedCallIds = [];
     channel.deliveredCallIds.clear();
     channel.abandonedCallIds.clear();
+    channel.completedCallIds.clear();
   }
 
   private prune(): void {
