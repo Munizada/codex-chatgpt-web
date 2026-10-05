@@ -3001,6 +3001,19 @@ export class ChatGptBrowserWorker {
         && externalProgress
         && completionTracker?.needsToolBatchObservation(progress.lastToolBatchRevision)) {
         const boundaryText = await this.currentSubmissionAnswerText(page, baseline, signal);
+        if (boundaryText === undefined) {
+          // Activity can briefly expose two assistant identities while the tool batch is already
+          // waiting for this causal boundary. Do not guess which one owns the pre-tool text and do
+          // not acknowledge an empty boundary: wait for the renderer to settle, while runStage's
+          // bounded active-tool grace keeps the accepted Send alive.
+          await this.waitForTurnDomOrExternalProgress(
+            page,
+            progress.revision,
+            externalProgress,
+            signal,
+          );
+          continue;
+        }
         completionTracker.observeToolBatch(progress.lastToolBatchRevision, boundaryText);
         await externalProgress.acknowledgeToolBatch(progress.lastToolBatchRevision);
       }
@@ -3226,8 +3239,13 @@ export class ChatGptBrowserWorker {
     page: Page,
     baseline: ChatGptSubmissionBaseline,
     signal?: AbortSignal,
-  ): Promise<string> {
+  ): Promise<string | undefined> {
     const state = await this.submissionDomState(page, baseline.domCache, signal);
+    const previous = new Set(baseline.initialTurnIdentities);
+    const addedResponses = state.responseIdentities.filter(identity => !previous.has(identity));
+    if (addedResponses.length > 1 && state.visibleStopButtonCount > 0) {
+      return undefined;
+    }
     const identity = chatGptNewTurnIdentity(
       baseline.initialTurnIdentities,
       state.responseIdentities,
