@@ -4617,11 +4617,21 @@ test("active native-tool Send headroom remains strictly bounded", async () => {
     { snapshot: () => ({ ...snapshot }) },
     600,
   ).finally(() => { settled = true; });
+  // Observe rejection immediately. On slower Windows runners, attaching a rejection matcher only
+  // after sleeping can briefly leave the timer-owned promise unhandled and keep Bun's test worker
+  // alive even though the stage itself already failed.
+  const outcome = stage.then(
+    value => ({ type: "value" as const, value }),
+    error => ({ type: "error" as const, error: error instanceof Error ? error : new Error(String(error)) }),
+  );
   // Stay above the 250ms minimum re-arm granularity used by the real stage clock. Tiny synthetic
   // budgets can fall below Windows timer resolution and test the scheduler instead of this guard.
   await Bun.sleep(450);
   expect(settled).toBeFalse();
-  await expect(stage).rejects.toThrow("ChatGPT browser stage timed out: send");
+  const result = await outcome;
+  expect(result.type).toBe("error");
+  if (result.type !== "error") throw new Error("bounded active-tool stage unexpectedly resolved");
+  expect(result.error.message).toBe("ChatGPT browser stage timed out: send");
 }, 3_000);
 
 test("a stage that spans a system sleep is not charged for the slept time", async () => {
