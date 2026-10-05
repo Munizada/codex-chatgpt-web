@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createContext, runInContext } from "node:vm";
 import type { Page } from "playwright-core";
-import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPLETION_SETTLE_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_COMPOSER_SELECT_ALL_KEY, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptSubmissionRejectionObserver, ChatGptPromptAttachmentIntegrityError, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, chatGptNewTurnIdentity, chatGptReboundTurnIdentity, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, sanitizeChatGptBrowserDiagnosticState, setChatGptThinkMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, CHATGPT_SEND_ACTIVE_TOOL_GRACE_MS, browserStageTimeouts, ChatGptSuspensionClock, remainingStageBudgetMs } from "../src/adapters/chatgpt-web/browser-worker";
+import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPLETION_SETTLE_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_COMPOSER_SELECT_ALL_KEY, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptSubmissionRejectionObserver, ChatGptPromptAttachmentIntegrityError, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, chatGptNewTurnIdentity, chatGptReboundTurnIdentity, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, sanitizeChatGptBrowserDiagnosticState, setChatGptThinkMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, CHATGPT_SEND_ACTIVE_TOOL_GRACE_MS, chatGptActiveToolStageCreditMs, browserStageTimeouts, ChatGptSuspensionClock, remainingStageBudgetMs } from "../src/adapters/chatgpt-web/browser-worker";
 import { ensureChatGptPersonalizedConnectorAccess, chatGptUnavailableProDetail } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter-error";
 import { CHATGPT_STOPPED_THINKING_LABELS } from "../src/adapters/chatgpt-web/ui-labels";
@@ -4587,52 +4587,14 @@ test("an active native-tool batch extends Send beyond a single progress revision
   await expect(stage).resolves.toBe("accepted");
 });
 
-test("active native-tool Send headroom remains strictly bounded", async () => {
-  const provider: CodexProviderConfig = {
-    adapter: "chatgpt-web",
-    baseUrl: `browser://bounded-active-tool-stage-${Date.now()}-${Math.random()}`,
-    chatgptWeb: { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true },
-  };
-  const worker = ChatGptBrowserWorker.forProvider(provider) as unknown as {
-    runStage<T>(
-      traceId: string,
-      stage: string,
-      timeoutMs: number,
-      action: (signal: AbortSignal) => Promise<T>,
-      clock?: { suspendedMs(): number },
-      awaitSettlement?: boolean,
-      progress?: { snapshot(): { revision: number; lastToolBatchRevision: number; activeToolCalls: number; lastProgressAt?: number } },
-      activeProgressGraceMs?: number,
-    ): Promise<T>;
-  };
-  const snapshot = { revision: 1, lastToolBatchRevision: 1, activeToolCalls: 1, lastProgressAt: Date.now() };
-  let settled = false;
-  const stage = worker.runStage(
-    "bounded-active-tool-stage",
-    "send",
-    300,
-    () => new Promise<never>(() => {}),
-    { suspendedMs: () => 0 },
-    false,
-    { snapshot: () => ({ ...snapshot }) },
-    600,
-  ).finally(() => { settled = true; });
-  // Observe rejection immediately. On slower Windows runners, attaching a rejection matcher only
-  // after sleeping can briefly leave the timer-owned promise unhandled and keep Bun's test worker
-  // alive even though the stage itself already failed.
-  const outcome = stage.then(
-    value => ({ type: "value" as const, value }),
-    error => ({ type: "error" as const, error: error instanceof Error ? error : new Error(String(error)) }),
-  );
-  // Stay above the 250ms minimum re-arm granularity used by the real stage clock. Tiny synthetic
-  // budgets can fall below Windows timer resolution and test the scheduler instead of this guard.
-  await Bun.sleep(450);
-  expect(settled).toBeFalse();
-  const result = await outcome;
-  expect(result.type).toBe("error");
-  if (result.type !== "error") throw new Error("bounded active-tool stage unexpectedly resolved");
-  expect(result.error.message).toBe("ChatGPT browser stage timed out: send");
-}, 3_000);
+test("active native-tool Send headroom remains strictly bounded", () => {
+  expect(chatGptActiveToolStageCreditMs(0, 20_000, 120_000, 0)).toBe(0);
+  expect(chatGptActiveToolStageCreditMs(1, 20_000, 120_000, 0)).toBe(20_000);
+  expect(chatGptActiveToolStageCreditMs(1, 20_000, 120_000, 100_000)).toBe(20_000);
+  expect(chatGptActiveToolStageCreditMs(1, 20_000, 120_000, 119_000)).toBe(1_000);
+  expect(chatGptActiveToolStageCreditMs(1, 20_000, 120_000, 120_000)).toBe(0);
+  expect(chatGptActiveToolStageCreditMs(3, 20_000, 120_000, 140_000)).toBe(0);
+});
 
 test("a stage that spans a system sleep is not charged for the slept time", async () => {
   // When the suspension exceeds the whole stage budget, the first timer firing must re-arm rather
