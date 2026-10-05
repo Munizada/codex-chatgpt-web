@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createContext, runInContext } from "node:vm";
 import type { Page } from "playwright-core";
-import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPLETION_SETTLE_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_COMPOSER_SELECT_ALL_KEY, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptSubmissionRejectionObserver, ChatGptPromptAttachmentIntegrityError, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, chatGptNewTurnIdentity, chatGptReboundTurnIdentity, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, sanitizeChatGptBrowserDiagnosticState, setChatGptThinkMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, browserStageTimeouts, ChatGptSuspensionClock, remainingStageBudgetMs } from "../src/adapters/chatgpt-web/browser-worker";
+import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPLETION_SETTLE_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_COMPOSER_SELECT_ALL_KEY, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptSubmissionRejectionObserver, ChatGptPromptAttachmentIntegrityError, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, chatGptNewTurnIdentity, chatGptReboundTurnIdentity, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, sanitizeChatGptBrowserDiagnosticState, setChatGptThinkMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, CHATGPT_SEND_ACTIVE_TOOL_GRACE_MS, chatGptActiveToolStageCreditMs, browserStageTimeouts, ChatGptSuspensionClock, remainingStageBudgetMs } from "../src/adapters/chatgpt-web/browser-worker";
 import { ensureChatGptPersonalizedConnectorAccess, chatGptUnavailableProDetail } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter-error";
 import { CHATGPT_STOPPED_THINKING_LABELS } from "../src/adapters/chatgpt-web/ui-labels";
@@ -89,6 +89,168 @@ test("conversation turn identity survives ChatGPT DOM virtualization", () => {
     ["conversation-turn-1"],
     ["conversation-turn-1", "conversation-turn-2", "conversation-turn-3"],
   )).toThrow("2 new conversation turns");
+  expect(chatGptNewTurnIdentity(
+    ["conversation-turn-1"],
+    ["conversation-turn-1", "conversation-turn-2", "conversation-turn-3"],
+    undefined,
+    true,
+  )).toBeUndefined();
+  expect(chatGptSubmissionEvidence({
+    initialTurnIdentities: ["conversation-turn-1"],
+    userIdentities: ["conversation-turn-1", "conversation-turn-2", "conversation-turn-3"],
+    responseIdentities: [],
+    generationRunning: true,
+  })).toBe("generation_running");
+});
+
+test("assistant binding waits through transient Activity ambiguity while generation is running", async () => {
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web",
+    baseUrl: `browser://activity-ambiguity-${Date.now()}-${Math.random()}`,
+    chatgptWeb: { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+  };
+  const hiddenLocator = {
+    filter() { return this; },
+    last() { return this; },
+    isVisible: async () => false,
+  };
+  const assistantLocator = { id: "assistant-final" };
+  const page = {
+    isClosed: () => false,
+    locator: (selector: string) => selector.startsWith("[data-turn-id=") ? assistantLocator : hiddenLocator,
+  } as unknown as Page;
+  const worker = ChatGptBrowserWorker.forProvider(provider) as unknown as {
+    waitForNewAssistantTurn(
+      page: Page,
+      baseline: { initialTurnIdentities: string[]; domCache: Record<string, unknown> },
+      deadline: number,
+    ): Promise<{ identity: string; locator: unknown }>;
+    submissionDomState(): Promise<{
+      turnIdentities: string[];
+      userIdentities: string[];
+      responseIdentities: string[];
+      visibleStopButtonCount: number;
+    }>;
+    waitForTurnDomOrExternalProgress(): Promise<void>;
+  };
+  let observations = 0;
+  worker.submissionDomState = async () => {
+    observations += 1;
+    if (observations === 1) {
+      return {
+        turnIdentities: ["conversation-turn-activity", "conversation-turn-assistant-final"],
+        userIdentities: [],
+        responseIdentities: ["conversation-turn-activity", "conversation-turn-assistant-final"],
+        visibleStopButtonCount: 1,
+      };
+    }
+    return {
+      turnIdentities: ["conversation-turn-assistant-final"],
+      userIdentities: [],
+      responseIdentities: ["conversation-turn-assistant-final"],
+      visibleStopButtonCount: 0,
+    };
+  };
+  worker.waitForTurnDomOrExternalProgress = async () => {};
+
+  await expect(worker.waitForNewAssistantTurn(
+    page,
+    { initialTurnIdentities: [], domCache: {} },
+    Date.now() + 1_000,
+  )).resolves.toMatchObject({
+    identity: "conversation-turn-assistant-final",
+    locator: assistantLocator,
+  });
+  expect(observations).toBe(2);
+});
+
+test("assistant binding defers a pending tool boundary until Activity ambiguity settles", async () => {
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web",
+    baseUrl: `browser://activity-tool-boundary-${Date.now()}-${Math.random()}`,
+    chatgptWeb: { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+  };
+  const hiddenLocator = {
+    filter() { return this; },
+    last() { return this; },
+    isVisible: async () => false,
+  };
+  const assistantLocator = { id: "assistant-final" };
+  const page = {
+    isClosed: () => false,
+    locator: (selector: string) => selector.startsWith("[data-turn-id=") ? assistantLocator : hiddenLocator,
+  } as unknown as Page;
+  const worker = ChatGptBrowserWorker.forProvider(provider) as unknown as {
+    waitForNewAssistantTurn(
+      page: Page,
+      baseline: { initialTurnIdentities: string[]; domCache: Record<string, unknown> },
+      deadline: number,
+      signal: AbortSignal | undefined,
+      externalProgress: ChatGptExternalTurnProgress,
+      graceMs: number,
+      completionTracker: ChatGptCompletionTracker,
+    ): Promise<{ identity: string; locator: unknown }>;
+    submissionDomState(): Promise<{
+      turnIdentities: string[];
+      userIdentities: string[];
+      responseIdentities: string[];
+      visibleStopButtonCount: number;
+    }>;
+    waitForTurnDomOrExternalProgress(): Promise<void>;
+    responseDomSnapshot(): Promise<{ visibleText: string }>;
+  };
+  const progress = new ChatGptExternalTurnProgress();
+  const revision = progress.recordToolBatch(1);
+  const completionTracker = new ChatGptCompletionTracker();
+  let observations = 0;
+  let waits = 0;
+  let boundaryReads = 0;
+  worker.submissionDomState = async () => {
+    observations += 1;
+    if (observations === 1) {
+      return {
+        turnIdentities: ["conversation-turn-activity", "conversation-turn-assistant-final"],
+        userIdentities: [],
+        responseIdentities: ["conversation-turn-activity", "conversation-turn-assistant-final"],
+        visibleStopButtonCount: 1,
+      };
+    }
+    return {
+      turnIdentities: ["conversation-turn-assistant-final"],
+      userIdentities: [],
+      responseIdentities: ["conversation-turn-assistant-final"],
+      visibleStopButtonCount: 1,
+    };
+  };
+  worker.waitForTurnDomOrExternalProgress = async () => { waits += 1; };
+  worker.responseDomSnapshot = async () => {
+    boundaryReads += 1;
+    return { visibleText: "tool preface" };
+  };
+
+  await expect(worker.waitForNewAssistantTurn(
+    page,
+    { initialTurnIdentities: [], domCache: {} },
+    Date.now() + 1_000,
+    undefined,
+    progress,
+    1_000,
+    completionTracker,
+  )).resolves.toMatchObject({
+    identity: "conversation-turn-assistant-final",
+    locator: assistantLocator,
+  });
+  expect(observations).toBe(2);
+  expect(waits).toBe(1);
+  expect(boundaryReads).toBe(1);
+
+  const deadline = new AbortController();
+  const timer = setTimeout(() => deadline.abort(), 100);
+  try {
+    await expect(progress.waitForToolBatchObservation(revision, deadline.signal)).resolves.toBeUndefined();
+  } finally {
+    clearTimeout(timer);
+  }
 });
 
 test("submission DOM tracks logical identities and retains virtualized history in its baseline", async () => {
@@ -3067,6 +3229,47 @@ test("submission acceptance stops when its stage is aborted", async () => {
   )).rejects.toMatchObject({ name: "AbortError" });
 });
 
+test("tool-boundary acknowledgement waits for transient Activity ambiguity to settle", async () => {
+  const progress = new ChatGptExternalTurnProgress();
+  const revision = progress.recordToolBatch(1);
+  const completionTracker = new ChatGptCompletionTracker();
+  const worker = Object.create(ChatGptBrowserWorker.prototype) as {
+    waitForSubmissionAccepted(
+      page: Page,
+      baseline: unknown,
+      signal?: AbortSignal,
+      externalProgress?: ChatGptExternalTurnProgress,
+      initialToolBatchRevision?: number,
+      completionTracker?: ChatGptCompletionTracker,
+    ): Promise<unknown>;
+    currentSubmissionAnswerText(): Promise<string | undefined>;
+    waitForTurnDomOrExternalProgress(): Promise<void>;
+  };
+  let boundaryReads = 0;
+  let waits = 0;
+  worker.currentSubmissionAnswerText = async () => ++boundaryReads === 1 ? undefined : "tool preface";
+  worker.waitForTurnDomOrExternalProgress = async () => { waits += 1; };
+
+  await expect(worker.waitForSubmissionAccepted(
+    {} as Page,
+    {},
+    undefined,
+    progress,
+    0,
+    completionTracker,
+  )).resolves.toBe("mcp_tool_call");
+  expect(boundaryReads).toBe(2);
+  expect(waits).toBe(1);
+
+  const deadline = new AbortController();
+  const timer = setTimeout(() => deadline.abort(), 100);
+  try {
+    await expect(progress.waitForToolBatchObservation(revision, deadline.signal)).resolves.toBeUndefined();
+  } finally {
+    clearTimeout(timer);
+  }
+});
+
 test("proven current-turn MCP activity is conclusive submission evidence", async () => {
   const waitForSubmissionAccepted = (ChatGptBrowserWorker.prototype as unknown as {
     waitForSubmissionAccepted(
@@ -4429,6 +4632,57 @@ test("remaining stage budget refunds slept time and stands once the awake budget
   expect(remainingStageBudgetMs(120_000, 120_000, 0)).toBe(0);
   expect(remainingStageBudgetMs(120_000, 900_000, 0)).toBe(0);
   expect(remainingStageBudgetMs(200, 210, 50)).toBe(250);
+});
+
+test("an active native-tool batch extends Send beyond a single progress revision", async () => {
+  expect(CHATGPT_SEND_ACTIVE_TOOL_GRACE_MS).toBe(120_000);
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web",
+    baseUrl: `browser://active-tool-stage-${Date.now()}-${Math.random()}`,
+    chatgptWeb: { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+  };
+  const worker = ChatGptBrowserWorker.forProvider(provider) as unknown as {
+    runStage<T>(
+      traceId: string,
+      stage: string,
+      timeoutMs: number,
+      action: (signal: AbortSignal) => Promise<T>,
+      clock?: { suspendedMs(): number },
+      awaitSettlement?: boolean,
+      progress?: { snapshot(): { revision: number; lastToolBatchRevision: number; activeToolCalls: number; lastProgressAt?: number } },
+      activeProgressGraceMs?: number,
+    ): Promise<T>;
+  };
+  let snapshot = { revision: 0, lastToolBatchRevision: 0, activeToolCalls: 0, lastProgressAt: undefined as number | undefined };
+  let resolveAction!: (value: string) => void;
+  const action = new Promise<string>(resolve => { resolveAction = resolve; });
+  const stage = worker.runStage(
+    "active-tool-stage",
+    "send",
+    30,
+    () => action,
+    { suspendedMs: () => 0 },
+    false,
+    { snapshot: () => ({ ...snapshot }) },
+    90,
+  );
+  setTimeout(() => {
+    snapshot = { revision: 1, lastToolBatchRevision: 1, activeToolCalls: 1, lastProgressAt: Date.now() };
+  }, 10);
+  setTimeout(() => {
+    snapshot = { revision: 2, lastToolBatchRevision: 1, activeToolCalls: 0, lastProgressAt: Date.now() };
+    resolveAction("accepted");
+  }, 80);
+  await expect(stage).resolves.toBe("accepted");
+});
+
+test("active native-tool Send headroom remains strictly bounded", () => {
+  expect(chatGptActiveToolStageCreditMs(0, 20_000, 120_000, 0)).toBe(0);
+  expect(chatGptActiveToolStageCreditMs(1, 20_000, 120_000, 0)).toBe(20_000);
+  expect(chatGptActiveToolStageCreditMs(1, 20_000, 120_000, 100_000)).toBe(20_000);
+  expect(chatGptActiveToolStageCreditMs(1, 20_000, 120_000, 119_000)).toBe(1_000);
+  expect(chatGptActiveToolStageCreditMs(1, 20_000, 120_000, 120_000)).toBe(0);
+  expect(chatGptActiveToolStageCreditMs(3, 20_000, 120_000, 140_000)).toBe(0);
 });
 
 test("a stage that spans a system sleep is not charged for the slept time", async () => {
