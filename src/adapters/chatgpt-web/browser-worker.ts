@@ -1170,6 +1170,13 @@ export const browserStageTimeouts = {
 } as const;
 
 /**
+ * Extra Send-stage headroom while the turn broker proves that a current-turn native tool batch is
+ * still unresolved. This covers the causal boundary/DOM recovery path without turning tool
+ * liveness into an unbounded browser-stage lease.
+ */
+export const CHATGPT_SEND_ACTIVE_TOOL_GRACE_MS = 120_000;
+
+/**
  * Detects that this process was suspended (system sleep) by watching for gaps in a steady tick.
  * On Apple Silicon the monotonic clock keeps advancing through sleep, so elapsed time alone cannot
  * distinguish "the stage really took 15 minutes" from "the machine slept for 14 of them" — and a
@@ -1433,11 +1440,10 @@ export function chatGptSubmissionEvidence(state: {
   responseIdentities: readonly string[];
   generationRunning: boolean;
 }): ChatGptSubmissionEvidence | undefined {
-  if (chatGptNewTurnIdentity(state.initialTurnIdentities, state.userIdentities)) return "user_turn";
   // A visible Stop control is direct evidence that this physical Send is generating. Prefer it
-  // over assistant-node identity while the renderer can temporarily expose both an Activity shell
-  // and its replacement response for the same exchange.
+  // over transient user/assistant identity churn while Activity replaces its optimistic shell.
   if (state.generationRunning) return "generation_running";
+  if (chatGptNewTurnIdentity(state.initialTurnIdentities, state.userIdentities)) return "user_turn";
   if (chatGptNewTurnIdentity(state.initialTurnIdentities, state.responseIdentities)) return "assistant_turn";
   return undefined;
 }
@@ -1532,13 +1538,17 @@ export function chatGptNewTurnIdentity(
   initial: readonly string[],
   current: readonly string[],
   preferredIdentity?: string,
+  allowTransientAmbiguity = false,
 ): string | undefined {
   const previous = new Set(initial);
   const added = current.filter(identity => !previous.has(identity));
   if (added.length > 1) {
     // ChatGPT can briefly expose both an Activity shell and its replacement assistant node.
-    // Only disambiguate when the submission already proved the exact paired user group.
+    // Only disambiguate when the submission already proved the exact paired user group. While the
+    // page is visibly generating, callers may defer this transient ambiguity and observe again;
+    // once generation stops, the same ambiguity remains a hard safety failure.
     if (preferredIdentity && added.includes(preferredIdentity)) return preferredIdentity;
+    if (allowTransientAmbiguity) return undefined;
     throw new Error(`ChatGPT exposed ${added.length} new conversation turns for one submitted message`);
   }
   return added[0];
@@ -2519,12 +2529,17 @@ export class ChatGptBrowserWorker {
     suspensionClock: Pick<ChatGptSuspensionClock, "suspendedMs"> = chatGptSuspensionClock,
     awaitAbortedActionSettlement = false,
     progressClock?: Pick<ChatGptTurnProgressReader, "snapshot">,
+    activeProgressGraceMs = CHATGPT_SEND_ACTIVE_TOOL_GRACE_MS,
   ): Promise<T> {
+    if (!Number.isFinite(activeProgressGraceMs) || activeProgressGraceMs < 0) {
+      throw new Error("ChatGPT browser active-tool stage grace must be a non-negative finite number");
+    }
     chatGptSuspensionClock.start();
     const startedAt = performance.now();
     const suspendedAtStart = suspensionClock.suspendedMs();
     let progressRevision = progressClock?.snapshot().revision ?? 0;
     let progressCreditMs = 0;
+    let activeProgressCreditMs = 0;
     console.info(`[chatgpt-web] browser turn ${traceId} stage=${stage} started`);
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -2545,7 +2560,8 @@ export class ChatGptBrowserWorker {
             timer = setTimeout(fireOrRearm, remaining);
             return;
           }
-          const latestProgressRevision = progressClock?.snapshot().revision ?? progressRevision;
+          const latestProgress = progressClock?.snapshot();
+          const latestProgressRevision = latestProgress?.revision ?? progressRevision;
           if (latestProgressRevision > progressRevision) {
             // Proven MCP activity means Send was accepted even if ChatGPT's DOM is late to expose
             // the submitted turn. Grant one fresh stage budget so the browser can capture the
@@ -2553,6 +2569,18 @@ export class ChatGptBrowserWorker {
             progressRevision = latestProgressRevision;
             progressCreditMs += timeoutMs;
             timer = setTimeout(fireOrRearm, timeoutMs);
+            return;
+          }
+          if ((latestProgress?.activeToolCalls ?? 0) > 0
+            && activeProgressCreditMs < activeProgressGraceMs) {
+            // A batch can be waiting on this browser observer's causal-boundary acknowledgement,
+            // so no second progress revision is guaranteed before the native tool can even start.
+            // Keep Send alive in bounded chunks while that batch remains unresolved, but cap the
+            // total lease so a lost progress/result frame still fails closed.
+            const creditMs = Math.min(timeoutMs, activeProgressGraceMs - activeProgressCreditMs);
+            activeProgressCreditMs += creditMs;
+            progressCreditMs += creditMs;
+            timer = setTimeout(fireOrRearm, creditMs);
             return;
           }
           stageTimedOut = true;
@@ -3171,10 +3199,12 @@ export class ChatGptBrowserWorker {
     signal?: AbortSignal,
   ): Promise<ChatGptSubmissionEvidence | undefined> {
     const state = await this.submissionDomState(page, baseline.domCache, signal);
+    // Stop is authoritative evidence that this Send is live. Do not reject the submission merely
+    // because Activity temporarily exposes two logical turn identities during that generation.
+    if (state.visibleStopButtonCount > 0) return "generation_running";
     const userIdentity = await this.submittedUserTurnIdentity(page, baseline, state, signal);
     let evidence: ChatGptSubmissionEvidence | undefined;
     if (userIdentity) evidence = "user_turn";
-    else if (state.visibleStopButtonCount > 0) evidence = "generation_running";
     else if (chatGptNewTurnIdentity(
       baseline.initialTurnIdentities,
       state.responseIdentities,
@@ -3299,6 +3329,7 @@ export class ChatGptBrowserWorker {
         observationBaseline.initialTurnIdentities,
         state.responseIdentities,
         chatGptAssistantIdentityForUser(observationBaseline.acceptedUserIdentity),
+        state.visibleStopButtonCount > 0,
       );
       if (progress
         && externalProgress
