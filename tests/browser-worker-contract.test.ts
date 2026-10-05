@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createContext, runInContext } from "node:vm";
 import type { Page } from "playwright-core";
-import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPLETION_SETTLE_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_COMPOSER_SELECT_ALL_KEY, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptSubmissionRejectionObserver, ChatGptPromptAttachmentIntegrityError, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, chatGptNewTurnIdentity, chatGptReboundTurnIdentity, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, sanitizeChatGptBrowserDiagnosticState, setChatGptThinkMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, browserStageTimeouts, ChatGptSuspensionClock, remainingStageBudgetMs } from "../src/adapters/chatgpt-web/browser-worker";
+import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPLETION_SETTLE_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_COMPOSER_SELECT_ALL_KEY, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptSubmissionRejectionObserver, ChatGptPromptAttachmentIntegrityError, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, chatGptNewTurnIdentity, chatGptReboundTurnIdentity, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, sanitizeChatGptBrowserDiagnosticState, setChatGptThinkMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, CHATGPT_SEND_ACTIVE_TOOL_GRACE_MS, browserStageTimeouts, ChatGptSuspensionClock, remainingStageBudgetMs } from "../src/adapters/chatgpt-web/browser-worker";
 import { ensureChatGptPersonalizedConnectorAccess, chatGptUnavailableProDetail } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter-error";
 import { CHATGPT_STOPPED_THINKING_LABELS } from "../src/adapters/chatgpt-web/ui-labels";
@@ -89,6 +89,18 @@ test("conversation turn identity survives ChatGPT DOM virtualization", () => {
     ["conversation-turn-1"],
     ["conversation-turn-1", "conversation-turn-2", "conversation-turn-3"],
   )).toThrow("2 new conversation turns");
+  expect(chatGptNewTurnIdentity(
+    ["conversation-turn-1"],
+    ["conversation-turn-1", "conversation-turn-2", "conversation-turn-3"],
+    undefined,
+    true,
+  )).toBeUndefined();
+  expect(chatGptSubmissionEvidence({
+    initialTurnIdentities: ["conversation-turn-1"],
+    userIdentities: ["conversation-turn-1", "conversation-turn-2", "conversation-turn-3"],
+    responseIdentities: [],
+    generationRunning: true,
+  })).toBe("generation_running");
 });
 
 test("submission DOM tracks logical identities and retains virtualized history in its baseline", async () => {
@@ -4430,6 +4442,83 @@ test("remaining stage budget refunds slept time and stands once the awake budget
   expect(remainingStageBudgetMs(120_000, 900_000, 0)).toBe(0);
   expect(remainingStageBudgetMs(200, 210, 50)).toBe(250);
 });
+
+test("an active native-tool batch extends Send beyond a single progress revision", async () => {
+  expect(CHATGPT_SEND_ACTIVE_TOOL_GRACE_MS).toBe(120_000);
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web",
+    baseUrl: `browser://active-tool-stage-${Date.now()}-${Math.random()}`,
+    chatgptWeb: { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+  };
+  const worker = ChatGptBrowserWorker.forProvider(provider) as unknown as {
+    runStage<T>(
+      traceId: string,
+      stage: string,
+      timeoutMs: number,
+      action: (signal: AbortSignal) => Promise<T>,
+      clock?: { suspendedMs(): number },
+      awaitSettlement?: boolean,
+      progress?: { snapshot(): { revision: number; lastToolBatchRevision: number; activeToolCalls: number; lastProgressAt?: number } },
+      activeProgressGraceMs?: number,
+    ): Promise<T>;
+  };
+  let snapshot = { revision: 0, lastToolBatchRevision: 0, activeToolCalls: 0, lastProgressAt: undefined as number | undefined };
+  let resolveAction!: (value: string) => void;
+  const action = new Promise<string>(resolve => { resolveAction = resolve; });
+  const stage = worker.runStage(
+    "active-tool-stage",
+    "send",
+    30,
+    () => action,
+    { suspendedMs: () => 0 },
+    false,
+    { snapshot: () => ({ ...snapshot }) },
+    90,
+  );
+  setTimeout(() => {
+    snapshot = { revision: 1, lastToolBatchRevision: 1, activeToolCalls: 1, lastProgressAt: Date.now() };
+  }, 10);
+  setTimeout(() => {
+    snapshot = { revision: 2, lastToolBatchRevision: 1, activeToolCalls: 0, lastProgressAt: Date.now() };
+    resolveAction("accepted");
+  }, 80);
+  await expect(stage).resolves.toBe("accepted");
+});
+
+test("active native-tool Send headroom remains strictly bounded", async () => {
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web",
+    baseUrl: `browser://bounded-active-tool-stage-${Date.now()}-${Math.random()}`,
+    chatgptWeb: { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+  };
+  const worker = ChatGptBrowserWorker.forProvider(provider) as unknown as {
+    runStage<T>(
+      traceId: string,
+      stage: string,
+      timeoutMs: number,
+      action: (signal: AbortSignal) => Promise<T>,
+      clock?: { suspendedMs(): number },
+      awaitSettlement?: boolean,
+      progress?: { snapshot(): { revision: number; lastToolBatchRevision: number; activeToolCalls: number; lastProgressAt?: number } },
+      activeProgressGraceMs?: number,
+    ): Promise<T>;
+  };
+  const snapshot = { revision: 1, lastToolBatchRevision: 1, activeToolCalls: 1, lastProgressAt: Date.now() };
+  let settled = false;
+  const stage = worker.runStage(
+    "bounded-active-tool-stage",
+    "send",
+    20,
+    () => new Promise<never>(() => {}),
+    { suspendedMs: () => 0 },
+    false,
+    { snapshot: () => ({ ...snapshot }) },
+    40,
+  ).finally(() => { settled = true; });
+  await Bun.sleep(45);
+  expect(settled).toBeFalse();
+  await expect(stage).rejects.toThrow("ChatGPT browser stage timed out: send");
+}, 2_000);
 
 test("a stage that spans a system sleep is not charged for the slept time", async () => {
   // When the suspension exceeds the whole stage budget, the first timer firing must re-arm rather
