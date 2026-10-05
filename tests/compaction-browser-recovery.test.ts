@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ChatGptBrowserWorker } from "../src/adapters/chatgpt-web/browser-worker";
+import { CHATGPT_SEND_ACCEPTANCE_TIMEOUT_MS, ChatGptBrowserWorker } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptBrowserTabClosedError } from "../src/adapters/chatgpt-web/adapter-error";
 import { resolveChatGptWebModelMode } from "../src/adapters/chatgpt-web/model";
 import { ChatGptExternalTurnProgress } from "../src/adapters/chatgpt-web/turn-progress";
@@ -157,7 +157,7 @@ test.each([
       `effort:${effort}`,
       tools ? "attach:tools" : "attach:plain", "files", "send", "observe",
     ]);
-    expect(sendBudgets).toEqual(multipart ? Array(6).fill(180_000) : [20_000]);
+    expect(sendBudgets).toEqual(multipart ? Array(6).fill(180_000) : [CHATGPT_SEND_ACCEPTANCE_TIMEOUT_MS]);
     expect(released).toBe(true);
     expect(activated).toBe(1);
     expect(page.listenerCount("request")).toBe(0);
