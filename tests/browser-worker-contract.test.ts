@@ -3140,6 +3140,47 @@ test("submission acceptance stops when its stage is aborted", async () => {
   )).rejects.toMatchObject({ name: "AbortError" });
 });
 
+test("tool-boundary acknowledgement waits for transient Activity ambiguity to settle", async () => {
+  const progress = new ChatGptExternalTurnProgress();
+  const revision = progress.recordToolBatch(1);
+  const completionTracker = new ChatGptCompletionTracker();
+  const worker = Object.create(ChatGptBrowserWorker.prototype) as {
+    waitForSubmissionAccepted(
+      page: Page,
+      baseline: unknown,
+      signal?: AbortSignal,
+      externalProgress?: ChatGptExternalTurnProgress,
+      initialToolBatchRevision?: number,
+      completionTracker?: ChatGptCompletionTracker,
+    ): Promise<unknown>;
+    currentSubmissionAnswerText(): Promise<string | undefined>;
+    waitForTurnDomOrExternalProgress(): Promise<void>;
+  };
+  let boundaryReads = 0;
+  let waits = 0;
+  worker.currentSubmissionAnswerText = async () => ++boundaryReads === 1 ? undefined : "tool preface";
+  worker.waitForTurnDomOrExternalProgress = async () => { waits += 1; };
+
+  await expect(worker.waitForSubmissionAccepted(
+    {} as Page,
+    {},
+    undefined,
+    progress,
+    0,
+    completionTracker,
+  )).resolves.toBe("mcp_tool_call");
+  expect(boundaryReads).toBe(2);
+  expect(waits).toBe(1);
+
+  const deadline = new AbortController();
+  const timer = setTimeout(() => deadline.abort(), 100);
+  try {
+    await expect(progress.waitForToolBatchObservation(revision, deadline.signal)).resolves.toBeUndefined();
+  } finally {
+    clearTimeout(timer);
+  }
+});
+
 test("proven current-turn MCP activity is conclusive submission evidence", async () => {
   const waitForSubmissionAccepted = (ChatGptBrowserWorker.prototype as unknown as {
     waitForSubmissionAccepted(
