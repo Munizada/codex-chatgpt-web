@@ -1176,6 +1176,16 @@ export const browserStageTimeouts = {
  */
 export const CHATGPT_SEND_ACTIVE_TOOL_GRACE_MS = 120_000;
 
+export function chatGptActiveToolStageCreditMs(
+  activeToolCalls: number,
+  timeoutMs: number,
+  activeProgressGraceMs: number,
+  activeProgressCreditMs: number,
+): number {
+  if (activeToolCalls <= 0 || activeProgressCreditMs >= activeProgressGraceMs) return 0;
+  return Math.min(timeoutMs, activeProgressGraceMs - activeProgressCreditMs);
+}
+
 /**
  * Detects that this process was suspended (system sleep) by watching for gaps in a steady tick.
  * On Apple Silicon the monotonic clock keeps advancing through sleep, so elapsed time alone cannot
@@ -2571,16 +2581,20 @@ export class ChatGptBrowserWorker {
             timer = setTimeout(fireOrRearm, timeoutMs);
             return;
           }
-          if ((latestProgress?.activeToolCalls ?? 0) > 0
-            && activeProgressCreditMs < activeProgressGraceMs) {
+          const activeCreditMs = chatGptActiveToolStageCreditMs(
+            latestProgress?.activeToolCalls ?? 0,
+            timeoutMs,
+            activeProgressGraceMs,
+            activeProgressCreditMs,
+          );
+          if (activeCreditMs > 0) {
             // A batch can be waiting on this browser observer's causal-boundary acknowledgement,
             // so no second progress revision is guaranteed before the native tool can even start.
             // Keep Send alive in bounded chunks while that batch remains unresolved, but cap the
             // total lease so a lost progress/result frame still fails closed.
-            const creditMs = Math.min(timeoutMs, activeProgressGraceMs - activeProgressCreditMs);
-            activeProgressCreditMs += creditMs;
-            progressCreditMs += creditMs;
-            timer = setTimeout(fireOrRearm, creditMs);
+            activeProgressCreditMs += activeCreditMs;
+            progressCreditMs += activeCreditMs;
+            timer = setTimeout(fireOrRearm, activeCreditMs);
             return;
           }
           stageTimedOut = true;
