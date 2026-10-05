@@ -3363,9 +3363,27 @@ export class ChatGptBrowserWorker {
         chatGptAssistantIdentityForUser(observationBaseline.acceptedUserIdentity),
         state.visibleStopButtonCount > 0,
       );
+      const previousResponses = new Set(observationBaseline.initialTurnIdentities);
+      const newResponseCount = state.responseIdentities
+        .filter(responseIdentity => !previousResponses.has(responseIdentity)).length;
+      const transientResponseAmbiguity = !identity
+        && state.visibleStopButtonCount > 0
+        && newResponseCount > 1;
       if (progress
         && externalProgress
         && completionTracker?.needsToolBatchObservation(progress.lastToolBatchRevision)) {
+        if (transientResponseAmbiguity) {
+          // The native tool is waiting for this causal boundary, but Activity is still exposing
+          // multiple candidate assistants. Do not acknowledge an empty/guessed boundary; wait for
+          // the renderer to collapse to one provable assistant first.
+          await this.waitForTurnDomOrExternalProgress(
+            observationPage,
+            progress.revision,
+            externalProgress,
+            signal,
+          );
+          continue;
+        }
         const boundaryText = identity
           ? (await this.responseDomSnapshot(
             observationPage.locator(chatGptAssistantTurnSelector(identity)),
