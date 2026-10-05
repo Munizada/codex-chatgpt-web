@@ -164,6 +164,95 @@ test("assistant binding waits through transient Activity ambiguity while generat
   expect(observations).toBe(2);
 });
 
+test("assistant binding defers a pending tool boundary until Activity ambiguity settles", async () => {
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web",
+    baseUrl: `browser://activity-tool-boundary-${Date.now()}-${Math.random()}`,
+    chatgptWeb: { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+  };
+  const hiddenLocator = {
+    filter() { return this; },
+    last() { return this; },
+    isVisible: async () => false,
+  };
+  const assistantLocator = { id: "assistant-final" };
+  const page = {
+    isClosed: () => false,
+    locator: (selector: string) => selector.startsWith("[data-turn-id=") ? assistantLocator : hiddenLocator,
+  } as unknown as Page;
+  const worker = ChatGptBrowserWorker.forProvider(provider) as unknown as {
+    waitForNewAssistantTurn(
+      page: Page,
+      baseline: { initialTurnIdentities: string[]; domCache: Record<string, unknown> },
+      deadline: number,
+      signal: AbortSignal | undefined,
+      externalProgress: ChatGptExternalTurnProgress,
+      graceMs: number,
+      completionTracker: ChatGptCompletionTracker,
+    ): Promise<{ identity: string; locator: unknown }>;
+    submissionDomState(): Promise<{
+      turnIdentities: string[];
+      userIdentities: string[];
+      responseIdentities: string[];
+      visibleStopButtonCount: number;
+    }>;
+    waitForTurnDomOrExternalProgress(): Promise<void>;
+    responseDomSnapshot(): Promise<{ visibleText: string }>;
+  };
+  const progress = new ChatGptExternalTurnProgress();
+  const revision = progress.recordToolBatch(1);
+  const completionTracker = new ChatGptCompletionTracker();
+  let observations = 0;
+  let waits = 0;
+  let boundaryReads = 0;
+  worker.submissionDomState = async () => {
+    observations += 1;
+    if (observations === 1) {
+      return {
+        turnIdentities: ["conversation-turn-activity", "conversation-turn-assistant-final"],
+        userIdentities: [],
+        responseIdentities: ["conversation-turn-activity", "conversation-turn-assistant-final"],
+        visibleStopButtonCount: 1,
+      };
+    }
+    return {
+      turnIdentities: ["conversation-turn-assistant-final"],
+      userIdentities: [],
+      responseIdentities: ["conversation-turn-assistant-final"],
+      visibleStopButtonCount: 1,
+    };
+  };
+  worker.waitForTurnDomOrExternalProgress = async () => { waits += 1; };
+  worker.responseDomSnapshot = async () => {
+    boundaryReads += 1;
+    return { visibleText: "tool preface" };
+  };
+
+  await expect(worker.waitForNewAssistantTurn(
+    page,
+    { initialTurnIdentities: [], domCache: {} },
+    Date.now() + 1_000,
+    undefined,
+    progress,
+    1_000,
+    completionTracker,
+  )).resolves.toMatchObject({
+    identity: "conversation-turn-assistant-final",
+    locator: assistantLocator,
+  });
+  expect(observations).toBe(2);
+  expect(waits).toBe(1);
+  expect(boundaryReads).toBe(1);
+
+  const deadline = new AbortController();
+  const timer = setTimeout(() => deadline.abort(), 100);
+  try {
+    await expect(progress.waitForToolBatchObservation(revision, deadline.signal)).resolves.toBeUndefined();
+  } finally {
+    clearTimeout(timer);
+  }
+});
+
 test("submission DOM tracks logical identities and retains virtualized history in its baseline", async () => {
   type Turn = { id: string; index: number; role: "user" | "assistant"; mounted: boolean };
   let turns: Turn[] = [
