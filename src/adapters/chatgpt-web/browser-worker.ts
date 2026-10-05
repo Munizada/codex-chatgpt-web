@@ -1151,13 +1151,21 @@ export function resolveChatGptWebMultipartStagingMode(
   );
 }
 
+/**
+ * Initial evidence window for an ordinary physical Send. ChatGPT can accept the keystroke and keep
+ * working server-side for tens of seconds before the renderer exposes a new turn, Stop control, or
+ * first MCP tool batch. Keep that pre-evidence window bounded, but long enough not to retire a
+ * healthy turn before its first observable progress.
+ */
+export const CHATGPT_SEND_ACCEPTANCE_TIMEOUT_MS = 60_000;
+
 export const browserStageTimeouts = {
   browserPage: 60_000,
   temporaryChatPreparation: 150_000,
   effortSelection: 120_000,
   promptAttachment: 60_000,
   fileAttachment: 120_000,
-  send: 20_000,
+  send: CHATGPT_SEND_ACCEPTANCE_TIMEOUT_MS,
   // A Bigger Context stage posts a much larger payload onto a conversation that already holds the
   // earlier parts. This budget covers ChatGPT accepting the submission, not just the click.
   multipartStageSend: 180_000,
