@@ -160,6 +160,14 @@ try {
       run(launchServices, ["-gc"]);
     }
   } finally {
-    fs.rmSync(scratch, { recursive: true, force: true });
+    // Windows can keep the just-launched/signed package tree transiently busy after the smoke
+    // process exits (for example while Defender or installer helpers release file handles). Retry
+    // only the final scratch cleanup for a bounded period; persistent locks still fail the smoke.
+    fs.rmSync(scratch, {
+      recursive: true,
+      force: true,
+      maxRetries: 40,
+      retryDelay: 250,
+    });
   }
 }
