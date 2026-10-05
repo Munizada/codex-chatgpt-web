@@ -4610,17 +4610,19 @@ test("active native-tool Send headroom remains strictly bounded", async () => {
   const stage = worker.runStage(
     "bounded-active-tool-stage",
     "send",
-    20,
+    300,
     () => new Promise<never>(() => {}),
     { suspendedMs: () => 0 },
     false,
     { snapshot: () => ({ ...snapshot }) },
-    40,
+    600,
   ).finally(() => { settled = true; });
-  await Bun.sleep(45);
+  // Stay above the 250ms minimum re-arm granularity used by the real stage clock. Tiny synthetic
+  // budgets can fall below Windows timer resolution and test the scheduler instead of this guard.
+  await Bun.sleep(450);
   expect(settled).toBeFalse();
   await expect(stage).rejects.toThrow("ChatGPT browser stage timed out: send");
-}, 2_000);
+}, 3_000);
 
 test("a stage that spans a system sleep is not charged for the slept time", async () => {
   // When the suspension exceeds the whole stage budget, the first timer firing must re-arm rather
