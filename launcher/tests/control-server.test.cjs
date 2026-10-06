@@ -1,5 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const { createConnection } = require("node:net");
 const { BrowserHost } = require("../electron/browser-host.cjs");
 const { BrowserControlServer } = require("../electron/control-server.cjs");
 
@@ -736,4 +737,39 @@ test("browser control server rejects malformed retained-conversation contracts",
   } finally {
     await server.close();
   }
+});
+
+test("control server close cannot be held open by a partial request peer", async () => {
+  const server = await new BrowserControlServer({
+    logger: { info() {}, warn() {}, error() {} },
+    getBrowserHost: () => null,
+    getPreferences: () => ({}),
+  }).start();
+  const { endpoint, token } = server.descriptor();
+  const url = new URL(endpoint);
+  const socket = createConnection({ host: url.hostname, port: Number(url.port) });
+  await new Promise((resolve, reject) => {
+    socket.once("connect", resolve);
+    socket.once("error", reject);
+  });
+  socket.write([
+    "POST /v1/session/inspect HTTP/1.1",
+    `Host: ${url.host}`,
+    `Authorization: Bearer ${token}`,
+    "Content-Type: application/json",
+    "Content-Length: 100",
+    "Connection: keep-alive",
+    "",
+    "{",
+  ].join("\r\n"));
+
+  const closing = server.close();
+  const closedQuickly = await Promise.race([
+    closing.then(() => true),
+    new Promise(resolve => setTimeout(() => resolve(false), 1_000)),
+  ]);
+  if (!closedQuickly) socket.destroy();
+  await closing;
+  assert.equal(closedQuickly, true);
+  assert.equal(socket.destroyed, true);
 });
