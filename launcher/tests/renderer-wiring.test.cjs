@@ -235,11 +235,10 @@ test("quit still stays open when runtime shutdown itself fails", async () => {
   assert.equal(result.ok, false);
   assert.match(result.message, /runtime shutdown failure/);
   assert.deepEqual(calls, ["runtime", "show"]);
-  assert.deepEqual(operations, [{
-    name: "launcher-quit",
-    status: "failed",
-    message: "synthetic runtime shutdown failure",
-  }]);
+  assert.equal(operations.length, 1);
+  assert.equal(operations[0].name, "launcher-quit");
+  assert.equal(operations[0].status, "failed");
+  assert.equal(operations[0].message, "synthetic runtime shutdown failure");
   assert.equal(context.quitting, false);
   assert.equal(context.exitCommitted, false);
   assert.equal(context.shutdownInProgress, false);
