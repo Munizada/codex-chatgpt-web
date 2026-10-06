@@ -4,6 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const { pipeline } = require("node:stream/promises");
+const { terminateOwnedProcessTree } = require("./process-tree.cjs");
 
 const REPOSITORY = "Munizada/codex-chatgpt-web";
 const RELEASE_API_URL = `https://api.github.com/repos/${REPOSITORY}/releases/latest`;
@@ -273,6 +274,17 @@ function defaultDependencies() {
         windowsHide: true,
       });
     },
+    terminateWorker(child) {
+      terminateOwnedProcessTree(child);
+    },
+    cleanupTempRoot(tempRoot) {
+      fs.rmSync(tempRoot, {
+        recursive: true,
+        force: true,
+        maxRetries: 40,
+        retryDelay: 250,
+      });
+    },
   };
 }
 
@@ -389,7 +401,7 @@ function createUpdateController({
         transition({ status: "installing", version: available.version });
         return { child, tempRoot, version: available.version };
       } catch (error) {
-        fs.rmSync(tempRoot, { recursive: true, force: true });
+        deps.cleanupTempRoot(tempRoot);
         transition({ status: "available", version: available.version });
         throw error;
       }
@@ -402,8 +414,11 @@ function createUpdateController({
   }
 
   function cancelInstall(launch) {
-    try { launch?.child?.kill(); } catch {}
-    if (launch?.tempRoot) fs.rmSync(launch.tempRoot, { recursive: true, force: true });
+    // The update worker is detached and may still own files under tempRoot. Prove its process tree
+    // has been terminated before deleting those files; otherwise a failed launcher shutdown can
+    // race a still-live installer and leave an inconsistent update behind.
+    if (launch?.child) deps.terminateWorker(launch.child);
+    if (launch?.tempRoot) deps.cleanupTempRoot(launch.tempRoot);
     if (candidate) transition({ status: "available", version: candidate.version });
   }
 
