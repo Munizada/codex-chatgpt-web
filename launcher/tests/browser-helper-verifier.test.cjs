@@ -3,7 +3,8 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
-const { verifyConnectorWithBrowserHelper } = require("../electron/browser-helper-verifier.cjs");
+const { EventEmitter } = require("node:events");
+const { stopChild, verifyConnectorWithBrowserHelper } = require("../electron/browser-helper-verifier.cjs");
 
 test("launcher verification delegates exact connector selection to the browser helper protocol", async (context) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-browser-helper-verify-"));
@@ -94,5 +95,70 @@ test("launcher verification preserves the helper error class and correlation id"
       assert.match(error.operationId, /^verify-[a-f0-9]{24}$/);
       return true;
     },
+  );
+});
+
+
+test("Windows browser helper cleanup uses owned process-tree termination instead of raw SIGTERM", async () => {
+  const child = new EventEmitter();
+  child.pid = 43210;
+  child.exitCode = null;
+  child.signalCode = null;
+  child.kill = () => {
+    throw new Error("raw child.kill must not be used on Windows");
+  };
+  child.stdin = {
+    destroyed: false,
+    writableEnded: false,
+    write(_value, callback) { callback(); },
+  };
+
+  let terminateCalls = 0;
+  let runningChecks = 0;
+  await stopChild(child, {
+    platform: "win32",
+    gracefulTimeoutMs: 1,
+    forcedTimeoutMs: 1,
+    terminateTree(target) {
+      assert.equal(target, child);
+      terminateCalls += 1;
+    },
+    processRunning(pid) {
+      assert.equal(pid, child.pid);
+      runningChecks += 1;
+      return false;
+    },
+  });
+
+  assert.equal(terminateCalls, 1);
+  assert.equal(runningChecks, 1);
+});
+
+test("Windows browser helper cleanup still fails closed when forced tree termination cannot stop it", async () => {
+  const child = new EventEmitter();
+  child.pid = 54321;
+  child.exitCode = null;
+  child.signalCode = null;
+  child.kill = () => false;
+  child.stdin = {
+    destroyed: false,
+    writableEnded: false,
+    write(_value, callback) { callback(); },
+  };
+
+  await assert.rejects(
+    stopChild(child, {
+      platform: "win32",
+      gracefulTimeoutMs: 1,
+      forcedTimeoutMs: 1,
+      terminateTree() {
+        throw new Error("taskkill denied");
+      },
+      processRunning(pid) {
+        assert.equal(pid, child.pid);
+        return true;
+      },
+    }),
+    /Browser helper verification process refused termination: taskkill denied/,
   );
 });

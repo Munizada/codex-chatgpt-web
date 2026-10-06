@@ -1,6 +1,7 @@
 const { spawn } = require("node:child_process");
 const { randomBytes } = require("node:crypto");
 const { createInterface } = require("node:readline");
+const { processRunning, terminateOwnedProcessTree } = require("./process-tree.cjs");
 
 const BROWSER_HELPER_OPERATION_TIMEOUT_MS = 90_000;
 
@@ -35,14 +36,39 @@ function writeMessage(child, message) {
   });
 }
 
-async function stopChild(child) {
+async function stopChild(child, options = {}) {
+  const platform = options.platform || process.platform;
+  const gracefulTimeoutMs = options.gracefulTimeoutMs ?? 5_000;
+  const forcedTimeoutMs = options.forcedTimeoutMs ?? 2_000;
+  const terminateTree = options.terminateTree || terminateOwnedProcessTree;
+  const isRunning = options.processRunning || processRunning;
+
   if (child.exitCode !== null || child.signalCode !== null) return;
   await writeMessage(child, { type: "shutdown" }).catch(() => {});
-  if (await waitForExit(child, 5_000)) return;
+  if (await waitForExit(child, gracefulTimeoutMs)) return;
+
+  if (platform === "win32") {
+    // Node's child.kill("SIGTERM") maps poorly to the helper process tree on Windows and can
+    // return false while Electron/Bun descendants still own the process. Use the launcher's
+    // existing taskkill /T /F path, then accept an OS-proven exit even if ChildProcess has not
+    // published its exit/close event yet.
+    try {
+      terminateTree(child);
+    } catch (error) {
+      if (!isRunning(child.pid)) return;
+      throw new Error(
+        `Browser helper verification process refused termination: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    if (await waitForExit(child, forcedTimeoutMs)) return;
+    if (!isRunning(child.pid)) return;
+    throw new Error("Browser helper verification process did not exit after forced Windows termination");
+  }
+
   if (!child.kill("SIGTERM") && child.exitCode === null && child.signalCode === null) {
     throw new Error("Browser helper verification process refused termination");
   }
-  if (!await waitForExit(child, 2_000)) {
+  if (!await waitForExit(child, forcedTimeoutMs)) {
     throw new Error("Browser helper verification process did not exit after termination");
   }
 }
@@ -175,4 +201,4 @@ async function verifyConnectorWithBrowserHelper(options) {
   return { ok: true, appName: options.appName };
 }
 
-module.exports = { runBrowserHelperOperation, verifyConnectorWithBrowserHelper };
+module.exports = { runBrowserHelperOperation, stopChild, verifyConnectorWithBrowserHelper };
