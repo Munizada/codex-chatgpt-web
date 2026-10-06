@@ -763,6 +763,7 @@ test("control server close cannot be held open by a partial request peer", async
     "{",
   ].join("\r\n"));
 
+  const peerClosed = new Promise(resolve => socket.once("close", resolve));
   const closing = server.close();
   const closedQuickly = await Promise.race([
     closing.then(() => true),
@@ -770,6 +771,10 @@ test("control server close cannot be held open by a partial request peer", async
   ]);
   if (!closedQuickly) socket.destroy();
   await closing;
+  const peerClosedQuickly = await Promise.race([
+    peerClosed.then(() => true),
+    new Promise(resolve => setTimeout(() => resolve(false), 1_000)),
+  ]);
   assert.equal(closedQuickly, true);
-  assert.equal(socket.destroyed, true);
+  assert.equal(peerClosedQuickly, true);
 });
