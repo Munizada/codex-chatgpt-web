@@ -1,11 +1,40 @@
 import { expect, test } from "bun:test";
 import { ChatGptTextFeed, ChatGptTraceFeed, ChatGptTurnSessions } from "../src/adapters/chatgpt-web/turn-execution";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
-import { createServer, type Socket } from "node:net";
+import { createConnection, createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { callTurnBroker, TurnBroker } from "../src/adapters/chatgpt-web/turn-broker";
 import { defaultBrokerEndpoint, isWindowsPipeEndpoint } from "../src/config";
+
+test("turn broker close cannot be held open by an idle connected peer", async () => {
+  const root = mkdtempSync(join(tmpdir(), "cgw-broker-close-peer-"));
+  const socketPath = defaultBrokerEndpoint(root);
+  const broker = TurnBroker.forSocket(socketPath);
+  let peer: Socket | undefined;
+  try {
+    await broker.listen();
+    peer = createConnection(socketPath);
+    await new Promise<void>((resolve, reject) => {
+      peer!.once("connect", resolve);
+      peer!.once("error", reject);
+    });
+
+    const closing = broker.close();
+    const closedQuickly = await Promise.race([
+      closing.then(() => true),
+      Bun.sleep(1_000).then(() => false),
+    ]);
+    if (!closedQuickly) peer.destroy();
+    await closing;
+    expect(closedQuickly).toBeTrue();
+    expect(peer.destroyed).toBeTrue();
+  } finally {
+    peer?.destroy();
+    await broker.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test.skipIf(process.platform === "win32")("closing a rejected broker leaves the live socket reachable", async () => {
   const root = mkdtempSync(join(tmpdir(), "cgw-owner-"));
