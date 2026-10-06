@@ -477,7 +477,7 @@ test("launcher helper Windows tree termination trusts an OS-proven exit", () => 
       taskkillCommand = command;
       taskkillArgs = [...args];
       return { pid: 1, output: [], stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), status: 128, signal: null };
-    }) as typeof import("node:child_process").spawnSync,
+    }) as unknown as typeof import("node:child_process").spawnSync,
     processKillFn: ((pid: number, signal?: NodeJS.Signals | number) => {
       expect(pid).toBe(4242);
       expect(signal).toBe(0);
@@ -508,7 +508,7 @@ test("launcher helper Windows tree termination fails closed when the process is 
       status: 1,
       signal: null,
       error: new Error("taskkill denied"),
-    })) as typeof import("node:child_process").spawnSync,
+    })) as unknown as typeof import("node:child_process").spawnSync,
     processKillFn: ((pid: number, signal?: NodeJS.Signals | number) => {
       expect(pid).toBe(4343);
       expect(signal).toBe(0);
