@@ -210,6 +210,7 @@ for (const arch of ["x64", "arm64"]) {
     const assetBody = Buffer.from("new appimage");
     const hash = require("node:crypto").createHash("sha256").update(assetBody).digest("hex");
     let spawned = null;
+    const cleanupOrder = [];
     const previousAppImage = process.env.CODEX_WEB_GPT_APPIMAGE;
     const previousWrapper = process.env.CODEX_WEB_GPT_LAUNCHER_EXECUTABLE;
     process.env.CODEX_WEB_GPT_APPIMAGE = oldAppImage;
@@ -244,6 +245,14 @@ for (const arch of ["x64", "arm64"]) {
             spawned = { runtime, worker, job, data: JSON.parse(fs.readFileSync(job, "utf8")) };
             return { pid: 123, unref() {}, kill() {} };
           },
+          terminateWorker: (child) => {
+            assert.equal(child.pid, 123);
+            cleanupOrder.push("terminate");
+          },
+          cleanupTempRoot: (tempRoot) => {
+            cleanupOrder.push("cleanup");
+            fs.rmSync(tempRoot, { recursive: true, force: true });
+          },
         },
       });
       await controller.checkOnce();
@@ -256,6 +265,7 @@ for (const arch of ["x64", "arm64"]) {
       assert.equal(fs.existsSync(spawned.data.runnerSource), true);
       assert.equal(controller.getState().status, "installing");
       controller.cancelInstall(launch);
+      assert.deepEqual(cleanupOrder, ["terminate", "cleanup"]);
       assert.equal(fs.existsSync(launch.tempRoot), false);
       assert.deepEqual(controller.getState(), { status: "available", version: "1.2.0" });
     } finally {
@@ -267,6 +277,52 @@ for (const arch of ["x64", "arm64"]) {
     }
   });
 }
+
+test("update cancellation fails closed before deleting staged files when worker termination fails", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "launcher-update-cancel-test-"));
+  try {
+    const asset = Buffer.from("update");
+    const hash = require("node:crypto").createHash("sha256").update(asset).digest("hex");
+    const controller = createUpdateController({
+      currentVersion: "1.1.4",
+      platform: "win32",
+      arch: "x64",
+      packaged: true,
+      executablePath: path.join(root, "Codex Web GPT.exe"),
+      runtimeExecutable: process.execPath,
+      logsDirectory: path.join(root, "logs"),
+      dependencies: {
+        fetchRelease: async () => ({
+          tag_name: "v1.2.0",
+          assets: [
+            {
+              name: "codex-web-gpt-1.2.0-win-x64.exe",
+              browser_download_url: "https://github.com/Munizada/codex-chatgpt-web/releases/download/v1.2.0/codex-web-gpt-1.2.0-win-x64.exe",
+            },
+            {
+              name: "checksums.txt",
+              browser_download_url: "https://github.com/Munizada/codex-chatgpt-web/releases/download/v1.2.0/checksums.txt",
+            },
+          ],
+        }),
+        downloadText: async () => `${hash}  codex-web-gpt-1.2.0-win-x64.exe\n`,
+        downloadFile: async (_url, destination) => fs.writeFileSync(destination, asset),
+        sha256: filePath => require("node:crypto").createHash("sha256").update(fs.readFileSync(filePath)).digest("hex"),
+        spawnWorker: () => ({ pid: 999, unref() {}, kill() {} }),
+        terminateWorker: () => { throw new Error("worker still running"); },
+        cleanupTempRoot: () => { throw new Error("staged files must not be deleted"); },
+      },
+    });
+    await controller.checkOnce();
+    const launch = await controller.beginInstall();
+    assert.equal(fs.existsSync(launch.tempRoot), true);
+    assert.throws(() => controller.cancelInstall(launch), /worker still running/);
+    assert.equal(fs.existsSync(launch.tempRoot), true);
+    assert.deepEqual(controller.getState(), { status: "installing", version: "1.2.0" });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("detached worker replaces an installed Linux AppImage and removes the old version", {
   skip: process.platform === "win32" ? "Linux AppImage execution is not meaningful on Windows" : false,
