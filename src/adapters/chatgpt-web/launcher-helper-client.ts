@@ -1,6 +1,6 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, win32 as win32Path } from "node:path";
 import { createInterface } from "node:readline";
 import { notifyLauncherTurn, readLauncherBrowserHostDescriptor } from "../../launcher-browser-host";
 import { ChatGptCompactionHandoffAccepted, ChatGptWebAdapterError } from "./adapter-error";
@@ -75,7 +75,7 @@ export function terminateLauncherHelperProcessTree(
   }
 
   const systemRoot = deps.systemRoot ?? process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows";
-  const taskkill = join(systemRoot, "System32", "taskkill.exe");
+  const taskkill = win32Path.join(systemRoot, "System32", "taskkill.exe");
   const spawnSyncFn = deps.spawnSyncFn ?? spawnSync;
   const result = spawnSyncFn(taskkill, ["/PID", String(pid), "/T", "/F"], {
     stdio: "ignore",
