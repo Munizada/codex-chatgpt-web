@@ -1,4 +1,4 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -21,6 +21,72 @@ interface PendingTurn {
   localFailure?: Error;
   progressForwarding?: AbortController;
   acknowledgedMultipartStage?: number;
+}
+
+
+interface LauncherHelperProcessLike {
+  pid?: number;
+  exitCode: number | null;
+  signalCode: NodeJS.Signals | null;
+  kill(signal?: NodeJS.Signals | number): boolean;
+}
+
+interface LauncherHelperWindowsTerminationDeps {
+  platform?: NodeJS.Platform;
+  systemRoot?: string;
+  spawnSyncFn?: typeof spawnSync;
+  processKillFn?: typeof process.kill;
+}
+
+export function launcherHelperProcessRunning(
+  pid: number | undefined,
+  processKillFn: typeof process.kill = process.kill,
+): boolean {
+  if (!Number.isInteger(pid) || (pid as number) < 1) return false;
+  try {
+    processKillFn(pid as number, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException)?.code === "EPERM";
+  }
+}
+
+export function terminateLauncherHelperProcessTree(
+  child: LauncherHelperProcessLike,
+  signal: NodeJS.Signals = "SIGTERM",
+  deps: LauncherHelperWindowsTerminationDeps = {},
+): void {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  const platform = deps.platform ?? process.platform;
+  const pid = child.pid;
+
+  if (platform !== "win32") {
+    if (!child.kill(signal) && child.exitCode === null && child.signalCode === null) {
+      throw new Error(`Launcher browser helper refused ${signal === "SIGKILL" ? "forced " : ""}termination`);
+    }
+    return;
+  }
+
+  if (!Number.isInteger(pid) || (pid as number) < 1) {
+    if (!child.kill(signal) && child.exitCode === null && child.signalCode === null) {
+      throw new Error("Launcher browser helper has no valid pid and refused termination");
+    }
+    return;
+  }
+
+  const systemRoot = deps.systemRoot ?? process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows";
+  const taskkill = join(systemRoot, "System32", "taskkill.exe");
+  const spawnSyncFn = deps.spawnSyncFn ?? spawnSync;
+  const result = spawnSyncFn(taskkill, ["/PID", String(pid), "/T", "/F"], {
+    stdio: "ignore",
+    windowsHide: true,
+    timeout: 10_000,
+  });
+  const processKillFn = deps.processKillFn ?? process.kill;
+  if ((result.error || result.status !== 0) && launcherHelperProcessRunning(pid as number, processKillFn)) {
+    const detail = result.error?.message ?? `taskkill exited with status ${result.status ?? "unknown"}`;
+    throw new Error(`Launcher browser helper Windows process-tree termination failed: ${detail}`);
+  }
 }
 
 type HelperMessage =
@@ -702,13 +768,19 @@ export class LauncherBrowserHelperClient {
     if (child.exitCode !== null || child.signalCode !== null) return;
     child.stdin.end();
     if (await this.waitForExit(child, gracefulTimeoutMs)) return;
-    if (!child.kill("SIGTERM") && child.exitCode === null && child.signalCode === null) {
-      throw new Error("Launcher browser helper refused termination");
+
+    if (process.platform === "win32") {
+      terminateLauncherHelperProcessTree(child);
+      if (await this.waitForExit(child, 2_000)) return;
+      // taskkill can return before Node publishes ChildProcess exit/close. Trust the OS liveness
+      // probe rather than turning that event-ordering race into a false cleanup failure.
+      if (!launcherHelperProcessRunning(child.pid)) return;
+      throw new Error("Launcher browser helper did not exit after forced Windows termination");
     }
+
+    terminateLauncherHelperProcessTree(child, "SIGTERM");
     if (await this.waitForExit(child, 2_000)) return;
-    if (!child.kill("SIGKILL") && child.exitCode === null && child.signalCode === null) {
-      throw new Error("Launcher browser helper refused forced termination");
-    }
+    terminateLauncherHelperProcessTree(child, "SIGKILL");
     if (!await this.waitForExit(child, 2_000)) {
       throw new Error("Launcher browser helper did not exit after forced termination");
     }
