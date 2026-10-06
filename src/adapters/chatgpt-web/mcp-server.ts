@@ -57,7 +57,7 @@ export const CHATGPT_WEB_EXEC_MAX_YIELD_MS = 90_000;
 // write_stdin may advertise a much longer poll, but this bridge must settle before the
 // 110-second MCP cap so the tunnel has time to carry the result or a bounded error.
 export const CHATGPT_WEB_WRITE_STDIN_MAX_YIELD_MS = 90_000;
-export const CHATGPT_WEB_RELIABILITY_PATCH_REVISION = "v6.1.4-r6";
+export const CHATGPT_WEB_RELIABILITY_PATCH_REVISION = "v6.1.4-r7";
 
 const LONG_RUNNING_TOOL_SUFFIXES = [
   "exec",
