@@ -46,6 +46,7 @@ class BrowserControlServer {
     this.limits = limits;
     this.token = randomBytes(32).toString("base64url");
     this.port = 0;
+    this.connections = new Set();
     this.server = createServer((request, response) => {
       void this.handle(request, response).catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
@@ -66,6 +67,10 @@ class BrowserControlServer {
       this.logger.error("browser.control_server_error", {
         message: error instanceof Error ? error.message : String(error),
       });
+    });
+    this.server.on("connection", (socket) => {
+      this.connections.add(socket);
+      socket.once("close", () => this.connections.delete(socket));
     });
     this.server.on("clientError", (_error, socket) => socket.end("HTTP/1.1 400 Bad Request\r\n\r\n"));
   }
@@ -383,10 +388,20 @@ class BrowserControlServer {
   }
 
   async close() {
-    if (!this.server.listening) return;
-    await new Promise((resolve, reject) => {
+    if (!this.server.listening) {
+      for (const socket of this.connections) socket.destroy();
+      this.connections.clear();
+      return;
+    }
+    const closing = new Promise((resolve, reject) => {
       this.server.close((error) => error ? reject(error) : resolve());
     });
+    // server.close() waits for active HTTP peers. A crashed helper can leave a partial authenticated
+    // request open indefinitely from the launcher's point of view, so shutdown owns and tears down
+    // every socket accepted by this private loopback server instead of waiting on the peer.
+    for (const socket of this.connections) socket.destroy();
+    await closing;
+    this.connections.clear();
   }
 }
 
