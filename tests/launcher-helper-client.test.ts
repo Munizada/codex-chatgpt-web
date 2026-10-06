@@ -4,7 +4,11 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ChatGptCompactionHandoffAccepted, ChatGptWebAdapterError } from "../src/adapters/chatgpt-web/adapter-error";
-import { LauncherBrowserHelperClient } from "../src/adapters/chatgpt-web/launcher-helper-client";
+import {
+  LauncherBrowserHelperClient,
+  launcherHelperProcessRunning,
+  terminateLauncherHelperProcessTree,
+} from "../src/adapters/chatgpt-web/launcher-helper-client";
 import type { BrowserTurn, ResolvedBrowserConfig } from "../src/adapters/chatgpt-web/browser-worker";
 import { LAUNCHER_BROWSER_HOST_KIND, LAUNCHER_BROWSER_IDLE_URL } from "../src/launcher-browser-host";
 
@@ -452,4 +456,76 @@ test("an older helper cannot silently drop selected skill files and releases the
   })).rejects.toThrow("does not support skill attachments");
   expect(sent).toEqual(["run", "abort"]);
   expect(released).toBe(true);
+});
+
+
+test("launcher helper Windows tree termination trusts an OS-proven exit", () => {
+  let taskkillCommand = "";
+  let taskkillArgs: string[] = [];
+  const child = {
+    pid: 4242,
+    exitCode: null,
+    signalCode: null,
+    kill: () => {
+      throw new Error("raw child.kill must not be used on Windows");
+    },
+  };
+  terminateLauncherHelperProcessTree(child, "SIGTERM", {
+    platform: "win32",
+    systemRoot: "C:\\Windows",
+    spawnSyncFn: ((command: string, args: readonly string[]) => {
+      taskkillCommand = command;
+      taskkillArgs = [...args];
+      return { pid: 1, output: [], stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), status: 128, signal: null };
+    }) as unknown as typeof import("node:child_process").spawnSync,
+    processKillFn: ((pid: number, signal?: NodeJS.Signals | number) => {
+      expect(pid).toBe(4242);
+      expect(signal).toBe(0);
+      const error = new Error("gone") as NodeJS.ErrnoException;
+      error.code = "ESRCH";
+      throw error;
+    }) as typeof process.kill,
+  });
+  expect(taskkillCommand).toBe("C:\\Windows\\System32\\taskkill.exe");
+  expect(taskkillArgs).toEqual(["/PID", "4242", "/T", "/F"]);
+});
+
+test("launcher helper Windows tree termination fails closed when the process is still alive", () => {
+  const child = {
+    pid: 4343,
+    exitCode: null,
+    signalCode: null,
+    kill: () => false,
+  };
+  expect(() => terminateLauncherHelperProcessTree(child, "SIGTERM", {
+    platform: "win32",
+    systemRoot: "C:\\Windows",
+    spawnSyncFn: (() => ({
+      pid: 1,
+      output: [],
+      stdout: Buffer.alloc(0),
+      stderr: Buffer.alloc(0),
+      status: 1,
+      signal: null,
+      error: new Error("taskkill denied"),
+    })) as unknown as typeof import("node:child_process").spawnSync,
+    processKillFn: ((pid: number, signal?: NodeJS.Signals | number) => {
+      expect(pid).toBe(4343);
+      expect(signal).toBe(0);
+      return true;
+    }) as typeof process.kill,
+  })).toThrow("Windows process-tree termination failed");
+});
+
+test("launcher helper process liveness treats EPERM as alive and ESRCH as gone", () => {
+  expect(launcherHelperProcessRunning(1, (() => {
+    const error = new Error("denied") as NodeJS.ErrnoException;
+    error.code = "EPERM";
+    throw error;
+  }) as typeof process.kill)).toBeTrue();
+  expect(launcherHelperProcessRunning(1, (() => {
+    const error = new Error("gone") as NodeJS.ErrnoException;
+    error.code = "ESRCH";
+    throw error;
+  }) as typeof process.kill)).toBeFalse();
 });
