@@ -298,6 +298,7 @@ export class TurnBroker implements TurnBrokerOwner {
   private readonly retiredBindings = new Map<string, string>();
   private readonly retiredTokens = new Map<string, string>();
   private acceptingExternalOwners = true;
+  private readonly sockets = new Set<Socket>();
   private server?: Server;
   private startPromise?: Promise<void>;
   private socketIdentity?: { dev: number; ino: number };
@@ -814,11 +815,19 @@ export class TurnBroker implements TurnBrokerOwner {
     this.startPromise = undefined;
     if (brokers.get(this.socketPath) === this) brokers.delete(this.socketPath);
     if (server?.listening) {
-      await new Promise<void>((resolveClose, rejectClose) => server.close(error => {
+      const closing = new Promise<void>((resolveClose, rejectClose) => server.close(error => {
         if (!error || (error as NodeJS.ErrnoException).code === "ERR_SERVER_NOT_RUNNING") resolveClose();
         else rejectClose(error);
       }));
+      // A peer can connect to the private socket/pipe and then never finish its request frame.
+      // net.Server.close() waits for such peers forever, so broker shutdown must retire every socket
+      // it accepted after revoking turn ownership.
+      for (const socket of this.sockets) socket.destroy();
+      await closing;
+    } else {
+      for (const socket of this.sockets) socket.destroy();
     }
+    this.sockets.clear();
     const identity = this.socketIdentity;
     this.socketIdentity = undefined;
     if (identity && existsSync(this.socketPath)) {
@@ -927,6 +936,8 @@ export class TurnBroker implements TurnBrokerOwner {
   }
 
   private handleSocket(socket: Socket): void {
+    this.sockets.add(socket);
+    socket.once("close", () => this.sockets.delete(socket));
     let buffered = "";
     let handled = false;
     const disconnected = new AbortController();
