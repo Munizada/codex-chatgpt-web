@@ -20,6 +20,7 @@ test("turn broker close cannot be held open by an idle connected peer", async ()
       peer!.once("error", reject);
     });
 
+    const peerClosed = new Promise<void>(resolve => peer!.once("close", resolve));
     const closing = broker.close();
     const closedQuickly = await Promise.race([
       closing.then(() => true),
@@ -27,8 +28,12 @@ test("turn broker close cannot be held open by an idle connected peer", async ()
     ]);
     if (!closedQuickly) peer.destroy();
     await closing;
+    const peerClosedQuickly = await Promise.race([
+      peerClosed.then(() => true),
+      Bun.sleep(1_000).then(() => false),
+    ]);
     expect(closedQuickly).toBeTrue();
-    expect(peer.destroyed).toBeTrue();
+    expect(peerClosedQuickly).toBeTrue();
   } finally {
     peer?.destroy();
     await broker.close();
