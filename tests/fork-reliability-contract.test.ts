@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import {
   CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS,
   browserStageTimeouts,
+  chatGptCheckpointStallRecoverySafe,
   chatGptExternalProgressSuppressesDomHealth,
   chatGptExternalToolCallsVetoCompletion,
   chatGptNewTurnIdentity,
@@ -57,6 +58,13 @@ test("stale unresolved MCP activity stops vetoing browser completion", () => {
   )).toBeFalse();
 });
 
+test("Luna retries an empty stalled final answer but never a partially emitted checkpoint answer", () => {
+  expect(chatGptCheckpointStallRecoverySafe(undefined, 42)).toBeTrue();
+  expect(chatGptCheckpointStallRecoverySafe(false, 42)).toBeTrue();
+  expect(chatGptCheckpointStallRecoverySafe(true, 0)).toBeTrue();
+  expect(chatGptCheckpointStallRecoverySafe(true, 1)).toBeFalse();
+});
+
 test("multipart receipt waits preserve first-stage headroom but recover later stalls quickly", () => {
   expect(browserStageTimeouts.multipartInitialStageAcknowledgement).toBe(180_000);
   expect(browserStageTimeouts.multipartStageAcknowledgement).toBe(60_000);
@@ -74,7 +82,7 @@ test("multipart acknowledgement recovery carries only the transaction receipt", 
   expect(recovery).not.toContain("DO_NOT_REPEAT_STAGE_PAYLOAD");
 });
 
-test("fork-only recovery paths remain wired on top of the 6.1.4 browser worker", () => {
+test("fork-only recovery paths remain wired on top of the 6.1.5 browser worker", () => {
   const worker = readFileSync("src/adapters/chatgpt-web/browser-worker.ts", "utf8");
   const adapter = readFileSync("src/adapters/chatgpt-web/index.ts", "utf8");
 
@@ -100,4 +108,6 @@ test("fork-only recovery paths remain wired on top of the 6.1.4 browser worker",
   expect(adapter).toContain("stalledTurnRecoveryRequest");
   expect(adapter).toContain("do not repeat that text; continue from exactly where it stopped");
   expect(adapter).toContain("prepareRecovery: () => prepareWith");
+  expect(adapter).not.toContain("!parsed._compactionRequest && !captureLunaCheckpoint");
+  expect(worker).toContain("checkpointRecoverySafe");
 });
