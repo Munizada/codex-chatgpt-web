@@ -737,7 +737,7 @@ export function createChatGptWebAdapter(
           ),
           release: () => {},
         }),
-        ...(!parsed._compactionRequest && !captureLunaCheckpoint ? {
+        ...(!parsed._compactionRequest ? {
           prepareRecovery: async () => {
             const recoveryInput = stalledTurnRecoveryRequest(checkpointInput.parsed);
             return {
@@ -815,7 +815,7 @@ export function createChatGptWebAdapter(
       capabilities: turnCapabilities,
       prepare: () => prepareWith(checkpointInput.parsed),
       ...(resumeInput ? { prepareResume: () => prepareWith(resumeInput) } : {}),
-      ...(!parsed._compactionRequest && !captureLunaCheckpoint ? {
+      ...(!parsed._compactionRequest ? {
         prepareRecovery: () => prepareWith(stalledTurnRecoveryRequest(checkpointInput.parsed)),
       } : {}),
       ...(retainConversation ? { retainConversation: true, conversationKey } : {}),
