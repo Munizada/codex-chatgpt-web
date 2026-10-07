@@ -30,6 +30,7 @@ interface RunMessage {
     capabilities: ChatGptWebCapabilities;
     nativeConnector?: boolean;
     resumeAvailable?: boolean;
+    recoveryAvailable?: boolean;
     retainConversation?: boolean;
     requireRetainedConversation?: boolean;
     conversationKey?: string;
@@ -71,6 +72,7 @@ type MaintenanceMessage = VerifyMessage | InspectMessage | SmokeMessage | Limits
 type InputMessage = RunMessage
   | MaintenanceMessage
   | { type: "prepared_selected_ack"; id: string; prepared: CompiledChatGptWebPrompt }
+  | { type: "recovery_prepared_ack"; id: string; prepared: CompiledChatGptWebPrompt }
   | { type: "send_activation_ack"; id: string }
   | { type: "completion_fence_begin_ack"; id: string; requestId: number; revision: number | null }
   | { type: "completion_fence_commit_ack"; id: string; requestId: number; committed: boolean }
@@ -99,6 +101,10 @@ console.error = diagnostic;
 const abortControllers = new Map<string, AbortController>();
 const turnProgress = new Map<string, ChatGptMirroredTurnProgress>();
 const preparedSelections = new Map<string, ReturnType<typeof createBrowserHelperPromptSelection>>();
+const recoveryPreparationWaiters = new Map<string, {
+  resolve: (prepared: CompiledChatGptWebPrompt) => void;
+  reject: (error: Error) => void;
+}>();
 const sendActivationWaiters = new Map<string, {
   resolve: () => void;
   reject: (error: Error) => void;
@@ -129,6 +135,10 @@ function requestShutdown(): Promise<void> {
   for (const controller of abortControllers.values()) controller.abort();
   for (const selection of preparedSelections.values()) selection.cancel();
   preparedSelections.clear();
+  for (const waiter of recoveryPreparationWaiters.values()) {
+    waiter.reject(new DOMException("Browser helper is shutting down", "AbortError"));
+  }
+  recoveryPreparationWaiters.clear();
   for (const waiter of sendActivationWaiters.values()) {
     waiter.reject(new DOMException("Browser helper is shutting down", "AbortError"));
   }
@@ -163,6 +173,9 @@ async function run(message: RunMessage): Promise<void> {
   if (abortControllers.has(message.id)) throw new Error(`Browser helper turn already exists: ${message.id}`);
   if (message.turn.resumeAvailable !== undefined && typeof message.turn.resumeAvailable !== "boolean") {
     throw new Error("Browser helper resume availability is invalid");
+  }
+  if (message.turn.recoveryAvailable !== undefined && typeof message.turn.recoveryAvailable !== "boolean") {
+    throw new Error("Browser helper recovery availability is invalid");
   }
   if (message.turn.nativeConnector !== undefined && typeof message.turn.nativeConnector !== "boolean") {
     throw new Error("Browser helper native connector flag is invalid");
@@ -225,6 +238,22 @@ async function run(message: RunMessage): Promise<void> {
     ...(message.turn.nativeConnector ? { nativeConnector: true } : {}),
     prepare: prepareSelected,
     ...(message.turn.resumeAvailable ? { prepareResume: prepareSelected } : {}),
+    ...(message.turn.recoveryAvailable ? {
+      prepareRecovery: () => new Promise<CompiledChatGptWebPrompt & { release: () => void }>((resolve, reject) => {
+        if (recoveryPreparationWaiters.has(message.id)) {
+          reject(new Error("Browser helper stall-recovery prompt is already pending"));
+          return;
+        }
+        recoveryPreparationWaiters.set(message.id, {
+          resolve: prepared => resolve({ ...prepared, release: () => {} }),
+          reject,
+        });
+        if (!writeProtocol({ type: "event", id: message.id, event: "recovery_prepare_requested" })) {
+          recoveryPreparationWaiters.delete(message.id);
+          reject(new Error("Browser helper could not request the stall-recovery prompt"));
+        }
+      }),
+    } : {}),
     ...(message.turn.retainConversation ? { retainConversation: true } : {}),
     ...(message.turn.requireRetainedConversation ? { requireRetainedConversation: true } : {}),
     ...(message.turn.conversationKey ? { conversationKey: message.turn.conversationKey } : {}),
@@ -327,6 +356,9 @@ async function run(message: RunMessage): Promise<void> {
   } finally {
     preparedSelections.get(message.id)?.cancel();
     preparedSelections.delete(message.id);
+    const recoveryWaiter = recoveryPreparationWaiters.get(message.id);
+    recoveryPreparationWaiters.delete(message.id);
+    recoveryWaiter?.reject(new DOMException("Browser helper turn ended before stall-recovery preparation", "AbortError"));
     const sendWaiter = sendActivationWaiters.get(message.id);
     sendActivationWaiters.delete(message.id);
     sendWaiter?.reject(new DOMException("Browser helper turn ended before Send acknowledgement", "AbortError"));
@@ -434,6 +466,23 @@ input.on("line", line => {
       return;
     }
     selection.select(prepared);
+  } else if (message.type === "recovery_prepared_ack") {
+    const prepared = message.prepared;
+    if (!prepared || typeof prepared.text !== "string" || !Array.isArray(prepared.images)
+      || prepared.images.length > 0
+      || (prepared.skillFiles?.length ?? 0) > 0
+      || prepared.multipart !== undefined) {
+      writeProtocol({ type: "error", id: message.id, message: "Browser helper stall-recovery prompt must be inline text only" });
+      abortControllers.get(message.id)?.abort();
+      return;
+    }
+    const waiter = recoveryPreparationWaiters.get(message.id);
+    if (!waiter) {
+      writeProtocol({ type: "error", id: message.id, message: "Browser helper has no pending stall-recovery prompt request" });
+      return;
+    }
+    recoveryPreparationWaiters.delete(message.id);
+    waiter.resolve(prepared);
   } else if (message.type === "send_activation_ack") {
     const waiter = sendActivationWaiters.get(message.id);
     if (!waiter) {
@@ -485,6 +534,9 @@ input.on("line", line => {
       ? new ChatGptCompactionHandoffAccepted()
       : undefined);
     preparedSelections.get(message.id)?.cancel();
+    const recoveryWaiter = recoveryPreparationWaiters.get(message.id);
+    recoveryPreparationWaiters.delete(message.id);
+    recoveryWaiter?.reject(new DOMException("Browser helper turn aborted before stall-recovery preparation", "AbortError"));
     const waiter = sendActivationWaiters.get(message.id);
     sendActivationWaiters.delete(message.id);
     waiter?.reject(new DOMException("Browser helper turn aborted before Send acknowledgement", "AbortError"));
@@ -535,4 +587,4 @@ process.once("SIGTERM", () => {
 });
 
 // Advertise the optional frames this helper understands so the daemon can negotiate them explicitly.
-writeProtocol({ type: "ready", features: ["progress", "tool-boundary-ack", "completion-fence", "multipart-stage-ack", "skill-attachments"] });
+writeProtocol({ type: "ready", features: ["progress", "tool-boundary-ack", "completion-fence", "multipart-stage-ack", "skill-attachments", "stall-recovery-prompt"] });
