@@ -22,7 +22,11 @@ This file is the canonical record for the custom reliability work maintained in
 - Native upstream base: **v6.1.5**
 - Upstream v6.1.5 release commit integrated into this fork:
   `92a356fac2292e3af5a97ab7ba634edd8d38621e`
-- Fork reliability revision: **v6.1.5-r9**
+- Fork reliability revision: **v6.1.5-r10**
+
+### v6.1.5-r10 large inline Send budget
+
+A production diagnostic showed a valid inline turn with 247,006 characters and about 73,162 estimated input tokens exhausting the fixed 60-second Send acceptance window before ChatGPT exposed semantic acceptance evidence. r10 keeps ordinary turns at 60 seconds but gives objectively large inline payloads the existing bounded 180-second ingestion budget used by Bigger Context. The selected budget is logged with transport, character count, and estimated tokens for future diagnostics.
 
 ### v6.1.5-r9 launcher recovery fix
 
