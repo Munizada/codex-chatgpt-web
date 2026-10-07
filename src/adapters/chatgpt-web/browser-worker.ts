@@ -48,6 +48,7 @@ import {
   type ChatGptWebMultipartStage,
 } from "./prompt";
 import { estimateCompiledChatGptWebInputTokens } from "./input-tokens";
+import { classifyChatGptFailureEvidence } from "./failure-attribution";
 import {
   assertAuthenticatedChatGptPage,
   assertNewChatPage,
@@ -232,7 +233,7 @@ function chatGptModelControlUnavailableAdapterError(diagnostic: string, detail?:
     {
       status: 502,
       errorType: "server_error",
-      code: "upstream_server_error",
+      code: "chatgpt_ui_controls_unverified",
       retryable: false,
       cause: new Error(diagnostic),
     },
@@ -2730,7 +2731,22 @@ export class ChatGptBrowserWorker {
           }
         }
       }
+      // An exhausted local observation budget is not proof of an OpenAI service outage.
+      // Preserve concrete, content-free evidence for later origin attribution.
+      const evidence = classifyChatGptFailureEvidence(surfacedError);
+      const progress = progressClock?.snapshot();
       console.error(`[chatgpt-web] browser turn ${traceId} stage=${stage} failed durationMs=${Math.round(performance.now() - startedAt)}: ${surfacedError instanceof Error ? surfacedError.message : String(surfacedError)}`);
+      console.error(`[chatgpt-web] browser failure evidence ${JSON.stringify({
+        traceId, stage,
+        source: evidence.source, evidenceKind: evidence.evidenceKind,
+        ...(evidence.code ? { code: evidence.code } : {}),
+        stageTimedOut, budgetMs: timeoutMs,
+        elapsedMs: Math.round(performance.now() - startedAt),
+        suspendedMs: suspensionClock.suspendedMs() - suspendedAtStart,
+        progressRevision: progress?.revision ?? 0,
+        activeToolCalls: progress?.activeToolCalls ?? 0,
+        progressCreditMs, activeProgressCreditMs,
+      })}`);
       throw surfacedError;
     } finally {
       if (timer) clearTimeout(timer);

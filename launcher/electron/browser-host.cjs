@@ -181,6 +181,14 @@ function isAbortedNavigationError(error) {
   return error instanceof Error && /\bERR_ABORTED\b/.test(error.message);
 }
 
+function isChatGptOriginUrl(value) {
+  try {
+    return new URL(value).origin === CHATGPT_ORIGIN;
+  } catch {
+    return false;
+  }
+}
+
 function isTemporaryChatUrl(value) {
   let parsed;
   try {
@@ -851,7 +859,7 @@ class BrowserHost {
       tab.url = contents.getURL();
       tab.loading = false;
       tab.rendererReady = true;
-      if (tab.url.startsWith(CHATGPT_ORIGIN)) tab.bootstrapReady = true;
+      if (isChatGptOriginUrl(tab.url)) tab.bootstrapReady = true;
       this.syncViewVisibility();
       if (browserInteractionModeFor(this) !== "automatic") {
         this.publishState?.(this.snapshot());
@@ -1004,7 +1012,7 @@ class BrowserHost {
       tab.url = contents.getURL();
       tab.loading = false;
       tab.rendererReady = true;
-      tab.bootstrapReady = tab.url.startsWith(CHATGPT_ORIGIN);
+      tab.bootstrapReady = isChatGptOriginUrl(tab.url);
       this.syncViewVisibility();
       this.publishState?.(this.snapshot());
     });
@@ -1282,7 +1290,7 @@ class BrowserHost {
         revision = this.authenticationRevision;
         const contents = this.view.webContents;
         if (contents.isDestroyed()) return;
-        if (contents.getURL().startsWith(`${CHATGPT_ORIGIN}/`)) {
+        if (isChatGptOriginUrl(contents.getURL())) {
           // The loaded page verifies its own session. A separate native request can
           // be rejected even while that session works; do not race the two clients.
           // Any probe started before this cookie change must settle without publishing.
@@ -1380,7 +1388,7 @@ class BrowserHost {
     await sleep(this.cloudflareChallengeRecoveryDelayMs);
     if (contents.isDestroyed()) throw new Error("ChatGPT browser closed during security-check recovery");
     const url = contents.getURL();
-    if (!url.startsWith(CHATGPT_ORIGIN)) {
+    if (!isChatGptOriginUrl(url)) {
       throw new Error("ChatGPT security-check recovery lost its owned browser page");
     }
 
@@ -2639,7 +2647,7 @@ class BrowserHost {
         this.show();
         this.logger.info("browser.login_opened");
         const current = this.view.webContents.getURL();
-        if (this.primaryNavigationError || this.reauthenticationRequired || !current.startsWith(CHATGPT_ORIGIN)) {
+        if (this.primaryNavigationError || this.reauthenticationRequired || !isChatGptOriginUrl(current)) {
           await this.view.webContents.loadURL(TEMPORARY_CHAT_URL);
         }
         await this.probeAuthentication();
@@ -2852,7 +2860,7 @@ class BrowserHost {
         });
         return this.snapshot();
       }
-      if (!url.startsWith(CHATGPT_ORIGIN)) {
+      if (!isChatGptOriginUrl(url)) {
         this.setState({ status: "signed-out", message: "Sign in to ChatGPT", authenticated: false, url });
         return this.snapshot();
       }
@@ -3194,6 +3202,7 @@ module.exports = {
   CHATGPT_VIEWPORT_CSS,
   IDLE_BROWSER_URL,
   isChatGptCloudflareChallengeResponse,
+  isChatGptOriginUrl,
   isTemporaryChatUrl,
   loadCommittedBrowserSurface,
   MANUAL_SUBMIT_TIMEOUT_MS,

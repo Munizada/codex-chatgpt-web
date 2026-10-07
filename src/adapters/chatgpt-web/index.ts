@@ -21,6 +21,7 @@ import { namespacedToolName, type AdapterEvent, type CodexContentPart, type Code
 import type { ProviderAdapter } from "../base";
 import { parseDataUrl } from "../image";
 import { ChatGptWebAdapterError, chatGptToolTimeoutError } from "./adapter-error";
+import { classifyChatGptFailureEvidence } from "./failure-attribution";
 import { ChatGptBrowserWorker } from "./browser-worker";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity, priorChatGptAbortedTurnIds } from "./environment";
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
@@ -329,8 +330,17 @@ function replayEvents(events: AdapterEvent[], emit: (event: AdapterEvent) => voi
 
 function submittedTurnFailure(session: ChatGptTurnSession, error: unknown): Error {
   const normalized = error instanceof Error ? error : new Error(String(error));
-  if (normalized instanceof ChatGptWebAdapterError) return normalized;
   const phase = session.runtime.submission?.phase;
+  if (phase && phase !== "prepared") {
+    const evidence = classifyChatGptFailureEvidence(normalized);
+    // The bridge-level `server_error` response type is not an attribution of an OpenAI outage.
+    // State the proof boundary explicitly; only UI-reported errors count as observed site signals.
+    console.warn(`[chatgpt-web] submitted turn failure evidence ${JSON.stringify({
+      phase, source: evidence.source, evidenceKind: evidence.evidenceKind,
+      ...(evidence.code ? { code: evidence.code } : {}),
+    })}`);
+  }
+  if (normalized instanceof ChatGptWebAdapterError) return normalized;
   if (!phase || phase === "prepared") return normalized;
   const ambiguous = phase === "send_activated";
   return new ChatGptWebAdapterError(
