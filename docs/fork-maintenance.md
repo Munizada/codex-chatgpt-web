@@ -22,7 +22,11 @@ This file is the canonical record for the custom reliability work maintained in
 - Native upstream base: **v6.1.5**
 - Upstream v6.1.5 release commit integrated into this fork:
   `92a356fac2292e3af5a97ab7ba634edd8d38621e`
-- Fork reliability revision: **v6.1.5-r8**
+- Fork reliability revision: **v6.1.5-r9**
+
+### v6.1.5-r9 launcher recovery fix
+
+A production diagnostic showed that `prepareRecovery` existed in the daemon but was lost when launcher browser work crossed into the out-of-process helper. The helper therefore logged `prepareRecovery=false` and could only rebind/fail after a quiescent post-tool stall. r9 adds an explicitly negotiated `stall-recovery-prompt` helper capability and a dedicated request/ack protocol so the helper can obtain the minimal same-conversation recovery prompt only when a proven stall occurs.
 
 ### Upstream v6.1.5 behavior adopted natively
 
