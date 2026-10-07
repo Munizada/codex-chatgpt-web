@@ -9,6 +9,7 @@ import {
 } from "./compaction-transaction";
 import type { ChatGptTurnEnvironment } from "./environment";
 import { chatGptToolTimeoutError } from "./adapter-error";
+import { subagentModelObservation } from "./mcp-observation";
 
 export const CHATGPT_WEB_ABANDONED_TOOL_SETTLEMENT_GRACE_MS = 30_000;
 
@@ -1307,6 +1308,10 @@ export class TurnBroker implements TurnBrokerOwner {
       console.info(
         `[chatgpt-web] broker trace=${binding.channel.traceId} queued call=${callId.slice(0, 17)} tool=${wireName} waiters=${binding.channel.waiters.size}`,
       );
+      const modelObservation = !toolRequest.freeform && subagentModelObservation(wireName, toolRequest.arguments);
+      if (modelObservation) console.info(`[chatgpt-web] subagent_model_requested ${JSON.stringify({
+        traceId: binding.channel.traceId, callId: callId.slice(0, 17), tool: wireName, ...modelObservation,
+      })}`);
       this.scheduleToolWaiters(binding.channel);
     });
   }

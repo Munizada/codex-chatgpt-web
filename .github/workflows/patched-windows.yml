@@ -1,11 +1,10 @@
-name: v6.1.4 Reliability Patch 4 Build
+name: v6.1.5-r8 Reliability Build
 
 on:
   push:
     branches:
       - main
-      - v6.1.4-base
-      - fix/v6.1.4-reliability
+      - fix/6.1.5-r8-recovery
     paths:
       - "src/**"
       - "launcher/**"
@@ -60,7 +59,7 @@ jobs:
         run: Compress-Archive -Path launcher/build/runtime/* -DestinationPath patched-runtime-windows-amd64.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: Codex-Web-GPT-v6.1.4-Reliability-Patch-4-Windows
+          name: Codex-Web-GPT-v6.1.5-r8-Windows
           path: |
             launcher/artifacts/*.exe
             patched-runtime-windows-amd64.zip
