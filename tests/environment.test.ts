@@ -1285,7 +1285,8 @@ describe("trusted Codex task environment continuity", () => {
     expect(() => store.resolve(request)).toThrow();
   });
 
-  test.skipIf(process.platform !== "win32")("resumed Windows tasks accept the same indexed rollout with either path namespace", () => {
+  const windowsOnlyTest = process.platform === "win32" ? test : test.skip;
+  windowsOnlyTest("resumed Windows tasks accept the same indexed rollout with either path namespace", () => {
     for (const namespaceHome of [false, true]) for (const namespaceRollout of [false, true]) {
       const { codexHome, request, rolloutPath } = resumedRootFixture();
       const databasePath = join(codexHome, "state_5.sqlite");
