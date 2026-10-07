@@ -22,7 +22,7 @@ This file is the canonical record for the custom reliability work maintained in
 - Native upstream base: **v6.1.5**
 - Upstream v6.1.5 release commit integrated into this fork:
   `92a356fac2292e3af5a97ab7ba634edd8d38621e`
-- Fork reliability revision: **v6.1.5-r10**
+- Fork reliability revision: **v6.1.5-r11**
 
 ### v6.1.5-r10 large inline Send budget
 
