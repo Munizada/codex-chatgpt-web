@@ -18,6 +18,7 @@ interface PendingTurn {
   abortListener?: () => void;
   sent?: boolean;
   prepared?: CompiledChatGptWebPrompt & { release: () => void };
+  recoveryPrepared?: CompiledChatGptWebPrompt & { release: () => void };
   localFailure?: Error;
   progressForwarding?: AbortController;
   acknowledgedMultipartStage?: number;
@@ -97,6 +98,7 @@ type HelperMessage =
   | { type: "event"; id: string; event: "completion_fence_begin"; requestId: number }
   | { type: "event"; id: string; event: "completion_fence_commit"; requestId: number; revision: number }
   | { type: "event"; id: string; event: "prepared_selected"; reused: boolean }
+  | { type: "event"; id: string; event: "recovery_prepare_requested" }
   | { type: "event"; id: string; event: "luna_checkpoint"; checkpoint: ChatGptLunaCheckpoint; answerHash: string }
   | { type: "result"; id: string; text: string }
   | {
@@ -179,6 +181,9 @@ function parseHelperMessage(line: string): HelperMessage {
         throw new Error("Launcher browser helper prompt selection is invalid");
       }
       return { type: "event", id: message.id, event, reused: message.reused };
+    }
+    if (event === "recovery_prepare_requested") {
+      return { type: "event", id: message.id, event };
     }
     if (!["heartbeat", "send_activated", "submitted", "reasoning", "commentary", "text"].includes(String(event))) {
       throw new Error("Launcher browser helper emitted an unknown event");
@@ -293,6 +298,11 @@ export class LauncherBrowserHelperClient {
         "Launcher browser helper does not support the MCP completion fence; update or restart the launcher",
       );
     }
+    if (turn.prepareRecovery && !this.helperFeatures.has("stall-recovery-prompt")) {
+      throw new Error(
+        "Launcher browser helper does not support same-conversation stall recovery; update or restart the launcher",
+      );
+    }
     return await new Promise<string>((resolveResult, rejectResult) => {
         if (this.pending.has(turn.traceId)) {
           rejectResult(new Error(`Duplicate launcher browser turn: ${turn.traceId}`));
@@ -353,6 +363,7 @@ export class LauncherBrowserHelperClient {
             capabilities: turn.capabilities,
             ...(turn.nativeConnector ? { nativeConnector: true } : {}),
             ...(turn.prepareResume ? { resumeAvailable: true } : {}),
+            ...(turn.prepareRecovery ? { recoveryAvailable: true } : {}),
             ...(turn.retainConversation ? { retainConversation: true } : {}),
             ...(turn.requireRetainedConversation ? { requireRetainedConversation: true } : {}),
             ...(turn.conversationKey ? { conversationKey: turn.conversationKey } : {}),
@@ -611,6 +622,40 @@ export class LauncherBrowserHelperClient {
           pending,
         ));
       }
+      else if (message.event === "recovery_prepare_requested") {
+        if (!pending.turn.prepareRecovery || pending.recoveryPrepared) {
+          this.abortWithLocalFailure(
+            message.id,
+            new Error("Launcher browser helper requested an unavailable or duplicate stall-recovery prompt"),
+            pending,
+          );
+          return;
+        }
+        void Promise.resolve().then(() => pending.turn.prepareRecovery!()).then(prepared => {
+          if (this.pending.get(message.id) !== pending) {
+            prepared.release();
+            return;
+          }
+          pending.recoveryPrepared = prepared;
+          return this.send({
+            type: "recovery_prepared_ack",
+            id: message.id,
+            prepared: {
+              text: prepared.text,
+              images: prepared.images,
+              ...(prepared.skillFiles ? { skillFiles: prepared.skillFiles } : {}),
+              ...(prepared.multipart ? { multipart: prepared.multipart } : {}),
+              ...(prepared.trimmedCompactionMessages !== undefined
+                ? { trimmedCompactionMessages: prepared.trimmedCompactionMessages }
+                : {}),
+            } satisfies CompiledChatGptWebPrompt,
+          });
+        }).catch(error => this.abortWithLocalFailure(
+          message.id,
+          error instanceof Error ? error : new Error(String(error)),
+          pending,
+        ));
+      }
       else if (message.event === "luna_checkpoint") {
         if (!pending.turn.captureLunaCheckpoint || !pending.turn.onLunaCheckpoint) {
           this.finishWithError(message.id, new Error("Launcher browser helper emitted an unexpected Luna checkpoint"));
@@ -706,6 +751,8 @@ export class LauncherBrowserHelperClient {
     pending.progressForwarding = undefined;
     pending.prepared?.release();
     pending.prepared = undefined;
+    pending.recoveryPrepared?.release();
+    pending.recoveryPrepared = undefined;
     this.pending.delete(id);
   }
 

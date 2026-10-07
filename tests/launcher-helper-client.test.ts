@@ -31,6 +31,12 @@ test("daemon streams browser lifecycle through the real helper process", async (
       const prepared = await turn.prepare();
       if (prepared.skillFiles?.[0]?.text !== "<skill>\\n<name>ipc</name>\\n<path>/skills/ipc/SKILL.md</path>\\ncheck IPC\\n</skill>") throw new Error("Skill file lost in IPC");
       if (prepared.multipart.parts.length !== 6) throw new Error("Multipart context was lost");
+      if (!turn.prepareRecovery) throw new Error("Stall recovery availability lost in helper IPC");
+      const recovery = await turn.prepareRecovery();
+      if (recovery.text !== "Continue after the proven stall." || recovery.images.length !== 0) {
+        throw new Error("Stall recovery prompt lost in helper IPC");
+      }
+      recovery.release();
       for (let index = 1; index < prepared.multipart.parts.length; index++) {
         await turn.onMultipartStageAcknowledged?.(index);
       }
@@ -93,6 +99,7 @@ test("daemon streams browser lifecycle through the real helper process", async (
   let sendActivated = false;
   let submitted = false;
   let released = false;
+  let recoveryReleased = false;
   const client = new LauncherBrowserHelperClient(config);
   try {
     const result = await client.run({
@@ -108,6 +115,11 @@ test("daemon streams browser lifecycle through the real helper process", async (
         })],
         multipart: { parts: ["part one", "part two", "part three", "part four", "part five", "part six"], commit: "inspect" },
         release: () => { released = true; },
+      }),
+      prepareRecovery: async () => ({
+        text: "Continue after the proven stall.",
+        images: [],
+        release: () => { recoveryReleased = true; },
       }),
       onMultipartStageAcknowledged: stage => { acknowledgedStages.push(stage); },
       onSendActivated: () => { sendActivated = true; },
@@ -138,6 +150,7 @@ test("daemon streams browser lifecycle through the real helper process", async (
       },
     }]);
     expect(released).toBe(true);
+    expect(recoveryReleased).toBe(true);
   } finally {
     await client.close();
   }
