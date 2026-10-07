@@ -1216,6 +1216,29 @@ export function resolveChatGptWebMultipartStagingMode(
  * healthy turn before its first observable progress.
  */
 export const CHATGPT_SEND_ACCEPTANCE_TIMEOUT_MS = 60_000;
+/**
+ * Large inline turns can be valid while still taking substantially longer for ChatGPT to ingest
+ * than ordinary prompts. Scale only the first-evidence window for payloads that are objectively
+ * large, and cap it at the same bounded budget already proven for Bigger Context staging.
+ */
+export const CHATGPT_LARGE_INLINE_SEND_CHAR_THRESHOLD = 200_000;
+export const CHATGPT_LARGE_INLINE_SEND_TOKEN_THRESHOLD = 60_000;
+export const CHATGPT_LARGE_INLINE_SEND_ACCEPTANCE_TIMEOUT_MS = CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS;
+
+export function chatGptSendAcceptanceTimeoutMs(
+  maxMessageChars: number,
+  estimatedMessageTokens: number,
+  multipart: boolean,
+): number {
+  if (multipart) return CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS;
+  if (
+    maxMessageChars >= CHATGPT_LARGE_INLINE_SEND_CHAR_THRESHOLD
+    || estimatedMessageTokens >= CHATGPT_LARGE_INLINE_SEND_TOKEN_THRESHOLD
+  ) {
+    return CHATGPT_LARGE_INLINE_SEND_ACCEPTANCE_TIMEOUT_MS;
+  }
+  return CHATGPT_SEND_ACCEPTANCE_TIMEOUT_MS;
+}
 
 export const browserStageTimeouts = {
   browserPage: 60_000,
@@ -5902,12 +5925,21 @@ export class ChatGptBrowserWorker {
       await diagnostics.capture(page, "file-attachment-complete");
       let completionTracker = new ChatGptCompletionTracker();
       const recordFinalUsage = await usageSubmission();
+      const sendAcceptanceTimeoutMs = chatGptSendAcceptanceTimeoutMs(
+        maxMessageChars,
+        estimatedMessageTokens,
+        prepared.multipart !== undefined,
+      );
+      console.info(`[chatgpt-web] browser turn ${turn.traceId} send acceptance budget ${JSON.stringify({
+        timeoutMs: sendAcceptanceTimeoutMs,
+        transport: prepared.multipart ? "multipart" : "inline",
+        maxMessageChars,
+        estimatedMessageTokens,
+      })}`);
       const finalSubmissionEvidence = await this.runStage(
         turn.traceId,
         "send",
-        // A multipart commit lands on a conversation already carrying every staged part, so it
-        // needs the same acceptance headroom the stages themselves get.
-        prepared.multipart ? browserStageTimeouts.multipartStageSend : browserStageTimeouts.send,
+        sendAcceptanceTimeoutMs,
         (stageSignal) => this.sendAttachedPrompt(
           page,
           submissionBaseline,
