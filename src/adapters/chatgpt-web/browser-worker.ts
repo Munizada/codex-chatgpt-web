@@ -146,7 +146,7 @@ export const CHATGPT_COMPLETION_ACTION_GRACE_MS = 60_000;
 export const CHATGPT_RUNNING_STALL_GRACE_MS = 10 * 60_000;
 // A response shell that is present but fully idle after MCP progress has gone stale is no longer
 // doing useful work. Recover it promptly instead of waiting another ten minutes.
-export const CHATGPT_QUIESCENT_STALL_GRACE_MS = 2 * 60_000;
+export const CHATGPT_QUIESCENT_STALL_GRACE_MS = CHATGPT_COMPLETION_ACTION_GRACE_MS;
 export const CHATGPT_COMPLETION_SETTLE_MS = 2_000;
 export const CHATGPT_TOOL_CONFIRMATION_TIMEOUT_MS = 60_000;
 export const MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS = 3;
@@ -5987,8 +5987,13 @@ export class ChatGptBrowserWorker {
           retryable: false,
         });
       };
+      // The fork owns one bounded same-conversation recovery for a fully idle response shell.
+      // Give that recovery a small lead over the upstream terminal DOM-health verdict so the
+      // recoverable Luna/no-answer case is continued rather than aborted at the same 60s edge.
       const domHealthTracker = new ChatGptTurnDomHealthTracker(
         chatGptResponseDomGraceMs(turn.compaction === true),
+        CHATGPT_EMPTY_RESPONSE_GRACE_MS,
+        CHATGPT_QUIESCENT_STALL_GRACE_MS + 5_000,
       );
       const runningStallTracker = new ChatGptRunningStallTracker();
       let runningStallRecoveries = 0;
