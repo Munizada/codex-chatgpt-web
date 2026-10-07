@@ -19,30 +19,30 @@ This file is the canonical record for the custom reliability work maintained in
 
 ## Current base
 
-- Native upstream base: **v6.1.4**
-- Upstream v6.1.4 commit merged into this fork:
-  `b6ca2d3f91f8a2ba140b522fe3b3c50b4ebffa2d`
-- Merge/pruning commit:
-  `0bf0a6d277900d6f74677f263e21fc4e921aab06`
+- Native upstream base: **v6.1.5**
+- Upstream v6.1.5 release commit integrated into this fork:
+  `92a356fac2292e3af5a97ab7ba634edd8d38621e`
+- Fork reliability revision: **v6.1.5-r8**
 
-### Upstream v6.1.4 behavior adopted natively
+### Upstream v6.1.5 behavior adopted natively
 
-The fork intentionally uses the v6.1.4 native implementations for:
+The fork keeps the v6.1.4 fixes and adopts the v6.1.5 implementations for:
 
-- cancellation/helper crash fixes;
-- reply and formula/Markdown parsing improvements;
-- follow-up plugin revalidation/selection;
-- Activity/approval UI handling;
-- compaction/summary fixes;
-- updater proxy support;
-- dependency/runtime updates.
+- context-upload sizing and multipart-history reconciliation;
+- browser response-health and incomplete-response classification;
+- current tool-approval DOM surfaces and one-time approval handling;
+- SSE/HTTP oversized-submission rejection detection;
+- Think-mode and connector-selection preservation;
+- Markdown/resource-preview stability;
+- saved thread-environment corruption recovery;
+- current model/token limits and dependency/runtime security updates.
 
-The previous fork-specific repeated-Markdown/formula workaround was removed when
-v6.1.4 superseded it.
+Fork code is retained only where the observed failures still require stronger
+bounded recovery or platform hardening than upstream provides.
 
 ## Fork-specific reliability behavior still retained
 
-These remain because v6.1.4 does not fully cover the observed failure modes:
+These remain because v6.1.5 does not fully cover the observed failure modes:
 
 - safe assistant-turn DOM rebind/re-key handling;
 - post-tool detached-assistant recovery;
@@ -71,11 +71,16 @@ The observed long-task failure mode was:
 
 Current fork behavior:
 
-- fully quiescent post-tool recovery window: **2 minutes**;
+- fully quiescent post-tool recovery window: **60 seconds**;
 - one same-conversation recovery is allowed when no tool call is in flight;
-- recovery may run even if a partial final answer was already streamed;
-- the continuation prompt explicitly forbids repeating already emitted answer
-  text or completed tool mutations;
+- ordinary turns may recover after a partial final answer, and the continuation
+  prompt explicitly forbids repeating already emitted answer text or completed
+  tool mutations;
+- Luna rolling-checkpoint turns recover only before any final-answer character
+  has been emitted; once checkpoint-bearing output has started, the bridge fails
+  closed instead of risking duplicate or corrupted checkpoint state;
+- the recovery watchdog is deliberately given priority over v6.1.5's terminal
+  incomplete-response verdict at the same 60-second boundary;
 - transport-only rebinds no longer reset the stall timer when the observed state
   has not changed, avoiding a second full grace period;
 - genuine fresh progress still resets the trackers normally.
