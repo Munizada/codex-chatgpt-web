@@ -17,6 +17,7 @@ const {
   BrowserHost,
   IDLE_BROWSER_URL,
   isChatGptCloudflareChallengeResponse,
+  isChatGptOriginUrl,
   isTemporaryChatUrl,
   loadCommittedBrowserSurface,
   MANUAL_COMPACTION_SUBMIT_TIMEOUT_MS,
@@ -24,6 +25,22 @@ const {
   navigationErrorForLog,
   navigationOriginForLog,
 } = require("../electron/browser-host.cjs");
+
+test("launcher ChatGPT origin recognition rejects hostname-prefix lookalikes", () => {
+  assert.equal(isChatGptOriginUrl("https://chatgpt.com/?temporary-chat=true"), true);
+  assert.equal(isChatGptOriginUrl("https://CHATGPT.COM/some/path"), true);
+  assert.equal(isChatGptOriginUrl("https://chatgpt.com:443/"), true);
+  for (const url of [
+    "https://chatgpt.com.evil.example/",
+    "https://chatgpt.com@evil.example/",
+    "https://chatgpt.com.evil.example/?temporary-chat=true",
+    "http://chatgpt.com/",
+    "javascript:alert(1)",
+    "not a url",
+  ]) {
+    assert.equal(isChatGptOriginUrl(url), false, url);
+  }
+});
 
 function primaryLoginFixture() {
   let loads = 0;
