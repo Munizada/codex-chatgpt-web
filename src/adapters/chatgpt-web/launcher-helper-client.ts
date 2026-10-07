@@ -19,6 +19,7 @@ interface PendingTurn {
   sent?: boolean;
   prepared?: CompiledChatGptWebPrompt & { release: () => void };
   recoveryPrepared?: CompiledChatGptWebPrompt & { release: () => void };
+  recoveryPreparationRequested?: boolean;
   localFailure?: Error;
   progressForwarding?: AbortController;
   acknowledgedMultipartStage?: number;
@@ -288,6 +289,11 @@ export class LauncherBrowserHelperClient {
         "Launcher browser helper does not support multipart acknowledgement forwarding; update or restart the launcher",
       );
     }
+    if (turn.externalProgress && !this.helperFeatures.has("progress")) {
+      throw new Error(
+        "Launcher browser helper cannot mirror Codex MCP progress; update or restart the launcher",
+      );
+    }
     if (turn.externalProgress && !this.helperFeatures.has("tool-boundary-ack")) {
       throw new Error(
         "Launcher browser helper does not support causal Codex tool-boundary acknowledgement; update or restart the launcher",
@@ -492,6 +498,7 @@ export class LauncherBrowserHelperClient {
     const pending = this.pending.get(message.id);
     if (!pending) return;
     if (message.type === "event") {
+      try {
       if (message.event === "heartbeat") pending.turn.onHeartbeat?.();
       else if (message.event === "tool_batch_observed") {
         const progress = pending.turn.externalProgress;
@@ -567,7 +574,15 @@ export class LauncherBrowserHelperClient {
           pending,
         ));
       }
-      else if (message.event === "submitted") pending.turn.onSubmitted?.();
+      else if (message.event === "submitted") {
+        // A callback is part of the daemon's execution contract. Neither synchronous exceptions
+        // nor rejected async callbacks may escape the stdout listener or go unobserved.
+        void Promise.resolve().then(() => pending.turn.onSubmitted?.()).catch(error => this.abortWithLocalFailure(
+          message.id,
+          error instanceof Error ? error : new Error(String(error)),
+          pending,
+        ));
+      }
       else if (message.event === "multipart_stage_acknowledged") {
         const multipart = pending.prepared?.multipart;
         if (!multipart
@@ -623,7 +638,7 @@ export class LauncherBrowserHelperClient {
         ));
       }
       else if (message.event === "recovery_prepare_requested") {
-        if (!pending.turn.prepareRecovery || pending.recoveryPrepared) {
+        if (!pending.turn.prepareRecovery || pending.recoveryPreparationRequested) {
           this.abortWithLocalFailure(
             message.id,
             new Error("Launcher browser helper requested an unavailable or duplicate stall-recovery prompt"),
@@ -631,6 +646,7 @@ export class LauncherBrowserHelperClient {
           );
           return;
         }
+        pending.recoveryPreparationRequested = true;
         void Promise.resolve().then(() => pending.turn.prepareRecovery!()).then(prepared => {
           if (this.pending.get(message.id) !== pending) {
             prepared.release();
@@ -668,6 +684,13 @@ export class LauncherBrowserHelperClient {
       }
       else if (message.event === "commentary" && message.text) pending.turn.onCommentary?.(message.text, message.continuation === true);
       else if (message.event === "text" && message.text) pending.turn.onTextDelta(message.text);
+      } catch (error) {
+        this.abortWithLocalFailure(
+          message.id,
+          error instanceof Error ? error : new Error(String(error)),
+          pending,
+        );
+      }
       return;
     }
     if (message.type === "result") {
@@ -715,9 +738,11 @@ export class LauncherBrowserHelperClient {
     const progress = turn.externalProgress;
     if (!progress) return;
     if (!this.helperFeatures.has("progress")) {
-      console.warn(
-        `[chatgpt-web] browser turn ${turn.traceId} runs without an MCP progress mirror:`
-        + " the launcher browser helper predates the progress frame",
+      const pending = this.pending.get(turn.traceId);
+      if (pending) this.abortWithLocalFailure(
+        turn.traceId,
+        new Error("Launcher browser helper lost its required MCP progress feature"),
+        pending,
       );
       return;
     }
@@ -734,10 +759,12 @@ export class LauncherBrowserHelperClient {
       // Anything else leaves the worker on DOM-only health without saying so, which is exactly the
       // silent degradation this transport exists to remove, so it is surfaced rather than dropped.
       if (stop.aborted || (error instanceof DOMException && error.name === "AbortError")) return;
-      console.warn(
-        `[chatgpt-web] browser turn ${turn.traceId} lost its MCP progress mirror:`
-        + ` ${error instanceof Error ? error.message : String(error)}`,
+      const failure = new Error(
+        `Launcher browser helper MCP progress transport failed: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
       );
+      const pending = this.pending.get(turn.traceId);
+      if (pending) this.abortWithLocalFailure(turn.traceId, failure, pending);
     });
   }
 
