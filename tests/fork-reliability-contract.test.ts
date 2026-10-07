@@ -85,6 +85,8 @@ test("multipart acknowledgement recovery carries only the transaction receipt", 
 test("fork-only recovery paths remain wired on top of the 6.1.5 browser worker", () => {
   const worker = readFileSync("src/adapters/chatgpt-web/browser-worker.ts", "utf8");
   const adapter = readFileSync("src/adapters/chatgpt-web/index.ts", "utf8");
+  const helperClient = readFileSync("src/adapters/chatgpt-web/launcher-helper-client.ts", "utf8");
+  const helperMain = readFileSync("src/adapters/chatgpt-web/browser-helper-main.ts", "utf8");
 
   expect(worker).toContain("prepareRecovery?:");
   expect(worker).toContain("generationBusyVisible");
@@ -110,4 +112,15 @@ test("fork-only recovery paths remain wired on top of the 6.1.5 browser worker",
   expect(adapter).toContain("prepareRecovery: () => prepareWith");
   expect(adapter).not.toContain("!parsed._compactionRequest && !captureLunaCheckpoint");
   expect(worker).toContain("checkpointRecoverySafe");
+  // The launcher executes browser turns out of process. A recovery callback that exists only in
+  // the daemon is dead code unless the helper negotiates and requests it explicitly.
+  expect(helperClient).toContain('this.helperFeatures.has("stall-recovery-prompt")');
+  expect(helperClient).toContain("recoveryAvailable: true");
+  expect(helperClient).toContain('event: "recovery_prepare_requested"');
+  expect(helperClient).toContain('type: "recovery_prepared_ack"');
+  expect(helperMain).toContain("recoveryAvailable?: boolean");
+  expect(helperMain).toContain("prepareRecovery:");
+  expect(helperMain).toContain('event: "recovery_prepare_requested"');
+  expect(helperMain).toContain('message.type === "recovery_prepared_ack"');
+  expect(helperMain).toContain('"stall-recovery-prompt"');
 });
