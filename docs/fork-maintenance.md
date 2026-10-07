@@ -24,6 +24,18 @@ This file is the canonical record for the custom reliability work maintained in
   `92a356fac2292e3af5a97ab7ba634edd8d38621e`
 - Fork reliability revision: **v6.1.5-r11**
 
+### v6.1.5-r11 failure-attribution audit
+
+The audited fork now records content-free causal evidence whenever a browser stage fails
+or a previously activated Send cannot be completed. Stage deadlines are explicitly
+unattributed by default: a timeout does not prove that OpenAI's service failed.
+Observed rate-limit/session/response error UI is tagged as a **site-observed signal**,
+not as proof of an infrastructure root cause. Missing or drifting model controls now
+use `chatgpt_ui_controls_unverified` instead of falsely reporting
+`upstream_server_error`. Regression tests cover the distinction and the historical
+large-context send cases. See `docs/fork-audit-2026-10-07.md` for remaining risks.
+
+
 ### v6.1.5-r10 large inline Send budget
 
 A production diagnostic showed a valid inline turn with 247,006 characters and about 73,162 estimated input tokens exhausting the fixed 60-second Send acceptance window before ChatGPT exposed semantic acceptance evidence. r10 keeps ordinary turns at 60 seconds but gives objectively large inline payloads the existing bounded 180-second ingestion budget used by Bigger Context. The selected budget is logged with transport, character count, and estimated tokens for future diagnostics.
