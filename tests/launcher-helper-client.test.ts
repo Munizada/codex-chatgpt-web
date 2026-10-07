@@ -431,6 +431,49 @@ test("structured helper errors preserve the ChatGPT adapter failure contract", a
   });
 });
 
+test("helper lifecycle callbacks fail closed without escaping the IPC reader", async () => {
+  for (const event of ["heartbeat", "text", "submitted", "reasoning"] as const) {
+    const client = new LauncherBrowserHelperClient({
+      appName: "Codex Native", browserHost: "launcher",
+      browserHostDescriptorPath: "/unused", storageStatePath: "/unused",
+      chromeExecutablePath: "/unused", headed: true, autoApproveToolCalls: false, useSavedChats: false,
+    });
+    const internal = client as unknown as {
+      child: unknown;
+      pending: Map<string, { turn: BrowserTurn; resolve(value: string): void; reject(error: Error): void }>;
+      send(message: Record<string, unknown>): Promise<void>;
+      handleLine(child: unknown, line: string): void;
+    };
+    const child = {};
+    internal.child = child;
+    const sent: Record<string, unknown>[] = [];
+    internal.send = async message => { sent.push(message); };
+    const traceId = "callback-" + event;
+    const fault = new Error("callback failure: " + event);
+    const response = new Promise<string>((resolve, reject) => {
+      internal.pending.set(traceId, {
+        turn: {
+          traceId, modelId: "gpt-5.6-sol",
+          capabilities: { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false },
+          prepare: async () => ({ text: "test", images: [], release() {} }),
+          onTextDelta: () => { throw fault; },
+          onHeartbeat: () => { throw fault; },
+          onSubmitted: () => Promise.reject(fault),
+          onReasoningSummary: () => { throw fault; },
+        },
+        resolve, reject,
+      });
+    });
+    const rejected = response.then(() => undefined, error => error as Error);
+    expect(() => internal.handleLine(child, JSON.stringify({ type: "event", id: traceId, event, text: "test" })))
+      .not.toThrow();
+    await new Promise<void>(resolve => setTimeout(resolve, 0));
+    expect(sent).toContainEqual({ type: "abort", id: traceId });
+    internal.handleLine(child, JSON.stringify({ type: "error", id: traceId, message: "helper aborted" }));
+    expect(await rejected).toBe(fault);
+  }
+});
+
 test("helper without MCP progress mirroring is rejected before dispatch", async () => {
   const client = new LauncherBrowserHelperClient({
     appName: "Codex Native", browserHost: "launcher",
