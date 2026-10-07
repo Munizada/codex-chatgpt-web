@@ -1755,6 +1755,13 @@ export class ChatGptRunningStallTracker {
   }
 }
 
+export function chatGptCheckpointStallRecoverySafe(
+  captureLunaCheckpoint: boolean | undefined,
+  emittedAnswerChars: number,
+): boolean {
+  return captureLunaCheckpoint !== true || emittedAnswerChars === 0;
+}
+
 export class ChatGptQuiescentStallTracker {
   private signature?: string;
   private since?: number;
@@ -6194,7 +6201,8 @@ export class ChatGptBrowserWorker {
         const recoverSameConversation = async (): Promise<boolean> => {
           if (!turn.prepareRecovery
             || sameConversationRecoveries > 0
-            || externalToolCallsInFlight) return false;
+            || externalToolCallsInFlight
+            || !chatGptCheckpointStallRecoverySafe(turn.captureLunaCheckpoint, emittedAnswerChars)) return false;
           sameConversationRecoveries += 1;
           let recoveryPrepared: (CompiledChatGptWebPrompt & { release: () => void }) | undefined;
           try {
@@ -6273,7 +6281,7 @@ export class ChatGptBrowserWorker {
             runningStallTracker.reset();
             quiescentStallTracker.reset();
             visibleTrace = new ChatGptVisibleTraceTracker();
-            markdownBuffer = new ChatGptMarkdownBuffer();
+            markdownBuffer = new ChatGptMarkdownBuffer(undefined, undefined, turn.compaction ? "complete" : "stream");
             sawRunning = false;
             loggedCompletionWait = false;
             capturedResponse = false;
@@ -6294,16 +6302,22 @@ export class ChatGptBrowserWorker {
           externalProgressLive,
         });
         if (quiescentStalled) {
+          const checkpointRecoverySafe = chatGptCheckpointStallRecoverySafe(
+            turn.captureLunaCheckpoint,
+            emittedAnswerChars,
+          );
           console.warn(
             `[chatgpt-web] browser turn ${turn.traceId} quiescent recovery decision`
             + ` prepareRecovery=${Boolean(turn.prepareRecovery)}`
             + ` sameConversationRecoveries=${sameConversationRecoveries}`
             + ` externalToolCallsInFlight=${externalToolCallsInFlight}`
+            + ` checkpointRecoverySafe=${checkpointRecoverySafe}`
             + ` emittedAnswerChars=${emittedAnswerChars}`,
           );
           if (turn.prepareRecovery
             && sameConversationRecoveries === 0
-            && !externalToolCallsInFlight) {
+            && !externalToolCallsInFlight
+            && checkpointRecoverySafe) {
             try {
               if (await recoverSameConversation()) continue;
             } catch (error) {
