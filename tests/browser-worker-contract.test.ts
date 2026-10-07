@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createContext, runInContext } from "node:vm";
 import type { Page } from "playwright-core";
-import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPLETION_SETTLE_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_COMPOSER_SELECT_ALL_KEY, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptSubmissionRejectionObserver, ChatGptPromptAttachmentIntegrityError, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, chatGptNewTurnIdentity, chatGptReboundTurnIdentity, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, sanitizeChatGptBrowserDiagnosticState, setChatGptThinkMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, CHATGPT_SEND_ACCEPTANCE_TIMEOUT_MS, CHATGPT_SEND_ACTIVE_TOOL_GRACE_MS, chatGptActiveToolStageCreditMs, browserStageTimeouts, ChatGptSuspensionClock, remainingStageBudgetMs } from "../src/adapters/chatgpt-web/browser-worker";
+import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPLETION_SETTLE_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_COMPOSER_SELECT_ALL_KEY, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptSubmissionRejectionObserver, ChatGptPromptAttachmentIntegrityError, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, chatGptNewTurnIdentity, chatGptReboundTurnIdentity, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, sanitizeChatGptBrowserDiagnosticState, setChatGptThinkMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, CHATGPT_SEND_ACCEPTANCE_TIMEOUT_MS, CHATGPT_LARGE_INLINE_SEND_ACCEPTANCE_TIMEOUT_MS, CHATGPT_LARGE_INLINE_SEND_CHAR_THRESHOLD, CHATGPT_LARGE_INLINE_SEND_TOKEN_THRESHOLD, CHATGPT_SEND_ACTIVE_TOOL_GRACE_MS, chatGptSendAcceptanceTimeoutMs, chatGptActiveToolStageCreditMs, browserStageTimeouts, ChatGptSuspensionClock, remainingStageBudgetMs } from "../src/adapters/chatgpt-web/browser-worker";
 import { ensureChatGptPersonalizedConnectorAccess, chatGptUnavailableProDetail } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter-error";
 import { CHATGPT_STOPPED_THINKING_LABELS } from "../src/adapters/chatgpt-web/ui-labels";
@@ -4727,6 +4727,31 @@ test("ordinary Send allows delayed first evidence but remains bounded", () => {
   expect(browserStageTimeouts.send).toBeGreaterThan(20_000);
   expect(browserStageTimeouts.send).toBeLessThan(browserStageTimeouts.multipartStageSend);
   expect(browserStageTimeouts.send).toBeLessThan(CHATGPT_SEND_ACTIVE_TOOL_GRACE_MS);
+});
+
+test("large inline Send scales first-evidence headroom without slowing ordinary prompts", () => {
+  expect(CHATGPT_LARGE_INLINE_SEND_CHAR_THRESHOLD).toBe(200_000);
+  expect(CHATGPT_LARGE_INLINE_SEND_TOKEN_THRESHOLD).toBe(60_000);
+  expect(CHATGPT_LARGE_INLINE_SEND_ACCEPTANCE_TIMEOUT_MS).toBe(180_000);
+
+  // The production r9 failure carried ~247k inline characters / ~73k input tokens and exhausted
+  // the fixed 60s Send window before ChatGPT exposed semantic acceptance evidence.
+  expect(chatGptSendAcceptanceTimeoutMs(247_006, 73_162, false))
+    .toBe(CHATGPT_LARGE_INLINE_SEND_ACCEPTANCE_TIMEOUT_MS);
+
+  // Either objective size signal is sufficient, while ordinary turns keep the fast 60s bound.
+  expect(chatGptSendAcceptanceTimeoutMs(CHATGPT_LARGE_INLINE_SEND_CHAR_THRESHOLD, 1, false))
+    .toBe(CHATGPT_LARGE_INLINE_SEND_ACCEPTANCE_TIMEOUT_MS);
+  expect(chatGptSendAcceptanceTimeoutMs(1, CHATGPT_LARGE_INLINE_SEND_TOKEN_THRESHOLD, false))
+    .toBe(CHATGPT_LARGE_INLINE_SEND_ACCEPTANCE_TIMEOUT_MS);
+  expect(chatGptSendAcceptanceTimeoutMs(
+    CHATGPT_LARGE_INLINE_SEND_CHAR_THRESHOLD - 1,
+    CHATGPT_LARGE_INLINE_SEND_TOKEN_THRESHOLD - 1,
+    false,
+  )).toBe(CHATGPT_SEND_ACCEPTANCE_TIMEOUT_MS);
+
+  // Multipart remains on the same bounded 180s ingestion budget.
+  expect(chatGptSendAcceptanceTimeoutMs(1, 1, true)).toBe(browserStageTimeouts.multipartStageSend);
 });
 
 test("a staged Bigger Context part keeps a large send budget but recovers stalled receipts promptly", () => {
