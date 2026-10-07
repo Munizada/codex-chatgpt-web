@@ -49,6 +49,10 @@ necessary to certify those paths.
    content-free structured diagnostics for stage deadlines and submitted turns.
    The diagnostic records phase/stage, local timeout, budget, elapsed time,
    sleep credit, MCP revision, active calls and causal evidence category.
+7. **r11 audit finding: auxiliary URL origin verification.** Several launcher
+   navigation and ownership checks used `startsWith(CHATGPT_ORIGIN)` on a URL
+   string. The boundary now uses `new URL(value).origin === CHATGPT_ORIGIN`
+   and rejects lookalike hosts and URL userinfo tricks.
 
 These snapshots are **cumulative**. Do not add event totals across their four
 exports as if they were four separate runs.
@@ -98,6 +102,7 @@ auth headers, cookies, broker secrets, and user content.
 - **R5 (medium):** CI can be canceled by bursty PR/ref updates. Final SHA requires a complete independent run; do not treat the green branch artifact alone as complete post-merge coverage.
 - **R6 (medium):** Live OpenAI faults, Cloudflare challenges, login expiry and model limits are not fully reproducible in unauthenticated CI.
 - **R7 (medium):** Opt-in screenshots may contain conversation material. Keep disabled by default, restrict permissions and retention, and never upload raw content to public bug reports.
+- **R8 (remediated in r11):** Auxiliary launcher ownership/authentication checks used URL string prefixes, which could recognize lookalike hosts as the ChatGPT origin. Replaced with exact parsed URL `origin` comparison and added hostname-prefix/userinfo/scheme regressions.
 
 ## Release gate
 
