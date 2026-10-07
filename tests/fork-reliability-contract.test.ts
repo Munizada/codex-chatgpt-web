@@ -112,6 +112,10 @@ test("fork-only recovery paths remain wired on top of the 6.1.5 browser worker",
   expect(adapter).toContain("prepareRecovery: () => prepareWith");
   expect(adapter).not.toContain("!parsed._compactionRequest && !captureLunaCheckpoint");
   expect(worker).toContain("checkpointRecoverySafe");
+  expect(worker).toContain("chatGptSendAcceptanceTimeoutMs");
+  expect(worker).toContain("CHATGPT_LARGE_INLINE_SEND_CHAR_THRESHOLD");
+  expect(worker).toContain("CHATGPT_LARGE_INLINE_SEND_TOKEN_THRESHOLD");
+  expect(worker).toContain("send acceptance budget");
   // The launcher executes browser turns out of process. A recovery callback that exists only in
   // the daemon is dead code unless the helper negotiates and requests it explicitly.
   expect(helperClient).toContain('this.helperFeatures.has("stall-recovery-prompt")');
