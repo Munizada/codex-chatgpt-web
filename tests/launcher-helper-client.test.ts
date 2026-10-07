@@ -431,6 +431,47 @@ test("structured helper errors preserve the ChatGPT adapter failure contract", a
   });
 });
 
+test("a broken MCP progress forwarding channel terminates the affected turn", async () => {
+  const client = new LauncherBrowserHelperClient({
+    appName: "Codex Native", browserHost: "launcher",
+    browserHostDescriptorPath: "/unused", storageStatePath: "/unused",
+    chromeExecutablePath: "/unused", headed: true, autoApproveToolCalls: false, useSavedChats: false,
+  });
+  const internal = client as unknown as {
+    child: unknown;
+    helperFeatures: Set<string>;
+    pending: Map<string, { turn: BrowserTurn; resolve(value: string): void; reject(error: Error): void }>;
+    send(message: Record<string, unknown>): Promise<void>;
+    forwardProgress(turn: BrowserTurn, stop: AbortSignal): void;
+    handleLine(child: unknown, line: string): void;
+  };
+  const child = {};
+  internal.child = child;
+  internal.helperFeatures = new Set(["progress"]);
+  const sent: Record<string, unknown>[] = [];
+  internal.send = async message => { sent.push(message); };
+  const turn: BrowserTurn = {
+    traceId: "progress-broken", modelId: "gpt-5.6-sol",
+    capabilities: { localToolsEnabled: true, solAvailable: true, extraHighAvailable: false, proAvailable: false },
+    prepare: async () => ({ text: "test", images: [], release() {} }),
+    externalProgress: {
+      snapshot: () => ({ revision: 0, lastToolBatchRevision: 0, activeToolCalls: 0 }),
+      waitForChange: async () => { throw new Error("progress transport disconnected"); },
+      acknowledgeToolBatch: async () => {},
+    },
+    onTextDelta() {},
+  };
+  const result = new Promise<string>((resolve, reject) => {
+    internal.pending.set(turn.traceId, { turn, resolve, reject });
+  });
+  const rejected = result.then(() => undefined, error => error as Error);
+  internal.forwardProgress(turn, new AbortController().signal);
+  await new Promise<void>(resolve => setTimeout(resolve, 0));
+  expect(sent).toContainEqual({ type: "abort", id: turn.traceId });
+  internal.handleLine(child, JSON.stringify({ type: "error", id: turn.traceId, message: "helper aborted" }));
+  expect((await rejected)?.message).toContain("progress transport disconnected");
+});
+
 test("helper lifecycle callbacks fail closed without escaping the IPC reader", async () => {
   for (const event of ["heartbeat", "text", "submitted", "reasoning"] as const) {
     const client = new LauncherBrowserHelperClient({
