@@ -1439,6 +1439,16 @@ describe("ChatGPT outer-native harness v4", () => {
       const prepared = await turn.prepare();
       try {
         expect(turn.captureLunaCheckpoint).toBeTrue();
+        expect(turn.prepareRecovery).toBeDefined();
+        const recovery = await turn.prepareRecovery!();
+        try {
+          expect(recovery.multipart).toBeUndefined();
+          expect(recovery.images).toHaveLength(0);
+          expect(recovery.text).toContain("Continue the in-progress Codex task from the exact state");
+          expect(recovery.text).toContain("do not repeat that text; continue from exactly where it stopped");
+        } finally {
+          recovery.release();
+        }
         const answer = "Luna completed the requested task.";
         turn.onTextDelta(answer);
         return answer;
