@@ -431,6 +431,35 @@ test("structured helper errors preserve the ChatGPT adapter failure contract", a
   });
 });
 
+test("helper without MCP progress mirroring is rejected before dispatch", async () => {
+  const client = new LauncherBrowserHelperClient({
+    appName: "Codex Native", browserHost: "launcher",
+    browserHostDescriptorPath: "/unused", storageStatePath: "/unused",
+    chromeExecutablePath: "/unused", headed: true, autoApproveToolCalls: false, useSavedChats: false,
+  });
+  const internal = client as unknown as {
+    ensureChild(): Promise<void>;
+    helperFeatures: Set<string>;
+    send(message: unknown): Promise<void>;
+  };
+  internal.ensureChild = async () => {};
+  internal.helperFeatures = new Set(["tool-boundary-ack", "completion-fence"]);
+  let dispatched = false;
+  internal.send = async () => { dispatched = true; };
+  await expect(client.run({
+    traceId: "missing-progress", modelId: "gpt-5.6-sol",
+    capabilities: { localToolsEnabled: true, solAvailable: true, extraHighAvailable: false, proAvailable: false },
+    prepare: async () => ({ text: "test", images: [], release() {} }),
+    externalProgress: {
+      snapshot: () => ({ revision: 0, lastToolBatchRevision: 0, activeToolCalls: 0 }),
+      waitForChange: async () => ({ revision: 1, lastToolBatchRevision: 1, activeToolCalls: 1, lastProgressAt: 1 }),
+      acknowledgeToolBatch: async () => {},
+    },
+    onTextDelta() {},
+  })).rejects.toThrow("cannot mirror Codex MCP progress");
+  expect(dispatched).toBe(false);
+});
+
 test("an older helper cannot silently drop selected skill files and releases the prepared turn", async () => {
   const client = new LauncherBrowserHelperClient({
     appName: "Codex Native2", browserHost: "launcher", browserHostDescriptorPath: "/durable/launcher.json",
