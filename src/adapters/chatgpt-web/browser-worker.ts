@@ -4161,6 +4161,7 @@ export class ChatGptBrowserWorker {
     submissionLifecycle?: Pick<BrowserTurn, "onSendActivated" | "onSubmitted">,
     completionTracker?: ChatGptCompletionTracker,
     recoverObservation?: ChatGptObservationRecovery,
+    traceId?: string,
   ): Promise<ChatGptSubmissionEvidence> {
     const composer = await this.activeComposer(page);
     const sendButton = composer
@@ -4184,6 +4185,7 @@ export class ChatGptBrowserWorker {
     await captureDiagnostic?.("send-ready");
     const initialToolBatchRevision = externalProgress?.snapshot().lastToolBatchRevision ?? 0;
     await submissionLifecycle?.onSendActivated?.();
+    if (traceId) console.info(`[chatgpt-web] browser turn ${traceId} send_activation_acknowledged`);
     await sendButton.press("Enter", {
       noWaitAfter: true,
       signal: abortSignal,
@@ -4192,6 +4194,7 @@ export class ChatGptBrowserWorker {
       // submitted the message; semantic submission evidence below remains the authority.
       timeout: 0,
     });
+    if (traceId) console.info(`[chatgpt-web] browser turn ${traceId} send_keypress_returned`);
     const evidence = await this.waitForSubmissionAcceptedWithRecovery(
       page,
       baseline,
@@ -5665,6 +5668,7 @@ export class ChatGptBrowserWorker {
                   return recovered;
                 }
                 : undefined,
+              turn.traceId,
             ),
           );
           console.info(
@@ -5814,6 +5818,7 @@ export class ChatGptBrowserWorker {
                     return recovered;
                   }
                   : undefined,
+                turn.traceId,
               ),
             );
             console.warn(
@@ -5963,6 +5968,7 @@ export class ChatGptBrowserWorker {
               return recovered;
             }
             : undefined,
+          turn.traceId,
         ),
         chatGptSuspensionClock,
         false,
@@ -6289,6 +6295,7 @@ export class ChatGptBrowserWorker {
                     return recovered;
                   }
                   : undefined,
+                turn.traceId,
               ),
               chatGptSuspensionClock,
               false,
