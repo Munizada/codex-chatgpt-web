@@ -1112,6 +1112,9 @@ async function requestQuit() {
     // Only failures before the runtime's point of no return should reopen the window.
     if (exitCommitted) {
       try { console.error(`[launcher] quit failed after runtime shutdown: ${message}`); } catch {}
+      // Electron's normal quit event may be blocked by a renderer handler. The runtime has
+      // already stopped, so fall back to a process exit rather than resurrecting the UI.
+      try { app.exit(0); } catch {}
       return { ok: false, message };
     }
     quitting = false;
