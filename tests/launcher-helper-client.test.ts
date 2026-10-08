@@ -471,6 +471,7 @@ test("duplicate stall-recovery requests are rejected before allocating another p
   internal.handleLine(child, frame);
   await new Promise<void>(resolve => setTimeout(resolve, 0));
   expect(sent).toContainEqual({ type: "abort", id: traceId });
+  expect(sent.some(message => message.type === "recovery_prepared_ack")).toBe(false);
   expect(preparations).toBe(1);
   internal.handleLine(child, JSON.stringify({ type: "error", id: traceId, message: "aborted" }));
   expect((await rejected)?.message).toContain("duplicate stall-recovery prompt");
