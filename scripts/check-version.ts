@@ -35,9 +35,19 @@ const expected = [
 for (const [path, needle] of expected) {
   if (!readFileSync(resolve(root, path), "utf8").includes(needle)) throw new Error(`${path} is not synchronized to ${packageVersion}`);
 }
+// The fork ships patched Windows installers through its reliability workflow, rather than
+// masquerading as the official upstream v6.1.5 release. Keep this distinction enforceable.
+const forkWindowsBuild = "https://github.com/Munizada/codex-chatgpt-web/actions/workflows/patched-windows.yml";
 for (const path of ["README.md", "README.zh-CN.md", "README.ja.md", "README.ko.md"]) {
   const readme = readFileSync(resolve(root, path), "utf8");
-  for (const target of ["win-x64.exe", "mac-arm64.dmg", "mac-x64.dmg", "linux-x64.AppImage"]) {
+  if (!readme.includes(forkWindowsBuild)) {
+    throw new Error(`${path} must direct patched Windows fork downloads to the fork reliability workflow`);
+  }
+  const upstreamWindows = `/releases/download/v${packageVersion}/codex-web-gpt-${packageVersion}-win-x64.exe`;
+  if (readme.includes(upstreamWindows)) {
+    throw new Error(`${path} must not advertise the unpatched upstream Windows installer as the fork build`);
+  }
+  for (const target of ["mac-arm64.dmg", "mac-x64.dmg", "linux-x64.AppImage"]) {
     const download = `/releases/download/v${packageVersion}/codex-web-gpt-${packageVersion}-${target}`;
     if (!readme.includes(download)) throw new Error(`${path} download for ${target} is not synchronized to ${packageVersion}`);
   }
