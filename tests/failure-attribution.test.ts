@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
 import { ChatGptWebAdapterError } from "../src/adapters/chatgpt-web/adapter-error";
+import type { CompiledChatGptWebPrompt } from "../src/adapters/chatgpt-web/prompt";
+
+type PreparedRecovery = CompiledChatGptWebPrompt & { release: () => void };
 import { ChatGptBrowserStageTimeoutError, attributeChatGptWebFailure } from "../src/adapters/chatgpt-web/failure-attribution";
 import {
   CHATGPT_STALL_RECOVERY_PREPARATION_TIMEOUT_MS,
@@ -38,11 +41,11 @@ test("only direct UI evidence is classified as an observed ChatGPT UI failure", 
 });
 
 test("late stall-recovery preparation releases its lease rather than contaminating another turn", async () => {
-  let complete!: (prepared: { text: string; images: []; release: () => void }) => void;
+  let complete!: (prepared: PreparedRecovery) => void;
   let releases = 0;
   const controller = new AbortController();
   const pending = prepareChatGptStallRecoveryWithLateRelease(
-    () => new Promise(resolve => { complete = resolve; }),
+    () => new Promise<PreparedRecovery>(resolve => { complete = resolve; }),
     controller.signal,
   );
   controller.abort();
@@ -70,7 +73,7 @@ test("a missing stall-recovery IPC acknowledgement has a finite deadline", async
     ): Promise<T>;
   }).runStage;
 
-  let releaseLate!: (prompt: { text: string; images: []; release: () => void }) => void;
+  let releaseLate!: (prompt: PreparedRecovery) => void;
   let lateReleases = 0;
   const stage = runStage.call(
     {},
@@ -78,7 +81,7 @@ test("a missing stall-recovery IPC acknowledgement has a finite deadline", async
     "stall_recovery_prepare",
     10,
     signal => prepareChatGptStallRecoveryWithLateRelease(
-      () => new Promise(resolve => { releaseLate = resolve; }),
+      () => new Promise<PreparedRecovery>(resolve => { releaseLate = resolve; }),
       signal,
     ),
   );
