@@ -948,6 +948,29 @@ type SelectedChatGptWebModelMode = ChatGptWebModelMode & {
   usageModel?: ChatGptUsageModel;
 };
 
+export function rebindChatGptRecoverySelection(
+  selection: SelectedChatGptWebModelMode["selection"],
+  pageUrl: string,
+): SelectedChatGptWebModelMode["selection"] {
+  if (!selection || selection.url === pageUrl) return selection;
+  let original: URL;
+  let current: URL;
+  try {
+    original = new URL(selection.url);
+    current = new URL(pageUrl);
+  } catch {
+    return selection;
+  }
+  // ChatGPT navigates from its initial composer to /c/<thread> after accepting the first turn.
+  // Preserve the already-verified model label and family, but bind its URL proof to that thread.
+  // Any unrelated navigation still fails the original strict pre-send validation.
+  if (original.origin !== "https://chatgpt.com"
+    || current.origin !== original.origin
+    || original.pathname !== "/"
+    || !/^\/c\/[^/]+\/?$/.test(current.pathname)) return selection;
+  return { ...selection, url: pageUrl };
+}
+
 export async function throwIfChatGptTerminalErrorAlert(scope: ChatGptTextScope): Promise<void> {
   if (await scope.getByTestId("regenerate-thread-error-button").last().isVisible().catch(() => false)) {
     throw new ChatGptWebAdapterError(
@@ -6338,7 +6361,10 @@ export class ChatGptBrowserWorker {
                 checkpoint => diagnostics.capture(page, `stall-recovery-${checkpoint}`),
                 turn.abortSignal ? AbortSignal.any([stageSignal, turn.abortSignal]) : stageSignal,
                 turn.externalProgress,
-                { onSendActivated: () => this.assertSelectedEffort(page, mode) },
+                { onSendActivated: () => this.assertSelectedEffort(page, {
+                  ...mode,
+                  selection: rebindChatGptRecoverySelection(mode.selection, page.url()),
+                }) },
                 completionTracker,
                 launcherObservationRecovery
                   ? async (...args) => {

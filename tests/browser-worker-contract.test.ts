@@ -7,6 +7,7 @@ import { createContext, runInContext } from "node:vm";
 import type { Page } from "playwright-core";
 import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPLETION_SETTLE_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_COMPOSER_SELECT_ALL_KEY, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptSubmissionRejectionObserver, ChatGptPromptAttachmentIntegrityError, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, chatGptNewTurnIdentity, chatGptReboundTurnIdentity, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, sanitizeChatGptBrowserDiagnosticState, setChatGptThinkMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, CHATGPT_SEND_ACCEPTANCE_TIMEOUT_MS, CHATGPT_LARGE_INLINE_SEND_ACCEPTANCE_TIMEOUT_MS, CHATGPT_LARGE_INLINE_SEND_CHAR_THRESHOLD, CHATGPT_LARGE_INLINE_SEND_TOKEN_THRESHOLD, CHATGPT_SEND_ACTIVE_TOOL_GRACE_MS, chatGptSendAcceptanceTimeoutMs, chatGptActiveToolStageCreditMs, browserStageTimeouts, ChatGptSuspensionClock, remainingStageBudgetMs } from "../src/adapters/chatgpt-web/browser-worker";
 import { ensureChatGptPersonalizedConnectorAccess, chatGptUnavailableProDetail } from "../src/adapters/chatgpt-web/browser-worker";
+import { rebindChatGptRecoverySelection } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter-error";
 import { CHATGPT_STOPPED_THINKING_LABELS } from "../src/adapters/chatgpt-web/ui-labels";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
@@ -32,6 +33,20 @@ function personalizedTemporaryChatRole(
   };
   return locator;
 }
+
+
+test("stall recovery preserves selected model proof across ChatGPT's new-thread URL", () => {
+  const selected = { url: "https://chatgpt.com/?temporary-chat=true", label: "High" };
+  const thread = "https://chatgpt.com/c/12345?temporary-chat=true";
+  expect(rebindChatGptRecoverySelection(selected, thread))
+    .toEqual({ url: thread, label: "High" });
+  expect(rebindChatGptRecoverySelection(selected, selected.url)).toBe(selected);
+  expect(rebindChatGptRecoverySelection(selected, "https://example.com/c/12345")).toBe(selected);
+  expect(rebindChatGptRecoverySelection(selected, "https://chatgpt.com/g/gpt-custom")).toBe(selected);
+  expect(rebindChatGptRecoverySelection({ url: thread, label: "High" }, "https://chatgpt.com/c/other"))
+    .toEqual({ url: thread, label: "High" });
+  expect(rebindChatGptRecoverySelection(undefined, thread)).toBeUndefined();
+});
 
 test("unavailable Pro detail reads only its linked tooltip in any language", async () => {
   const { createWindow } = require("@mixmark-io/domino");
