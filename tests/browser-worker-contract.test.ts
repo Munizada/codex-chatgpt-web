@@ -3108,7 +3108,7 @@ test("effort readback rejects a changed selection or surface before activating S
     { editable: false }, { count: 2 }]) {
     Object.assign(state, { url: selection.url, label: "Alto", expanded: "false", editable: true, count: 1 }, change);
     await expect(worker.assertSelectedEffort(page, mode)).rejects.toMatchObject({
-      code: "upstream_server_error", retryable: false,
+      code: "chatgpt_model_control_unavailable", retryable: false,
     });
   }
 });
