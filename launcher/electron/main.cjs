@@ -1054,6 +1054,26 @@ function registerIpc({ logger, stateStore }) {
   });
 }
 
+async function finalizeLauncherQuitResources() {
+  const failures = [];
+  try {
+    await browserHost?.persistSession();
+  } catch (error) {
+    failures.push({ stage: "persist-session", message: error instanceof Error ? error.message : String(error) });
+  }
+  try {
+    browserHost?.destroy();
+  } catch (error) {
+    failures.push({ stage: "destroy-browser", message: error instanceof Error ? error.message : String(error) });
+  }
+  try {
+    await browserControl?.close();
+  } catch (error) {
+    failures.push({ stage: "close-control", message: error instanceof Error ? error.message : String(error) });
+  }
+  return failures;
+}
+
 async function requestQuit() {
   if (shutdownInProgress || exitCommitted) {
     return { ok: false, message: "Launcher shutdown is already in progress" };
@@ -1064,17 +1084,31 @@ async function requestQuit() {
     if (activeOperation) {
       throw new Error(`Wait for ${activeOperation} to finish before quitting Codex Web GPT`);
     }
+    // Runtime shutdown is the point of no return: reopening the launcher after this succeeds
+    // leaves its window alive with a stopped runtime. Remaining cleanup is best effort.
     await runtimeSupervisor?.shutdown({ cancelActiveTurns: true, force: true });
     stopCatalogVerificationMonitor();
     quitting = true;
-    await browserHost?.persistSession();
-    browserHost?.destroy();
-    await browserControl?.close();
+    const cleanupFailures = await finalizeLauncherQuitResources();
     exitCommitted = true;
+    if (cleanupFailures.length > 0) {
+      try {
+        console.error(`[launcher] quit cleanup completed with warnings: ${JSON.stringify(cleanupFailures)}`);
+      } catch {
+        // Logging must not resurrect an already-stopped launcher.
+      }
+    }
     app.quit();
-    return { ok: true };
+    return cleanupFailures.length > 0
+      ? { ok: true, message: "Launcher is closing after non-fatal cleanup warnings" }
+      : { ok: true };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    // Only failures before the runtime's point of no return should reopen the window.
+    if (exitCommitted) {
+      try { console.error(`[launcher] quit failed after runtime shutdown: ${message}`); } catch {}
+      return { ok: false, message };
+    }
     quitting = false;
     showMainWindow();
     publishOperation({ name: "launcher-quit", status: "failed", message });
