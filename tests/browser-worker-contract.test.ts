@@ -4721,6 +4721,16 @@ test("the bundled helper is adopted only for the packaged runtime layout", () =>
   expect(heartbeat).toBeLessThan(tryStart);
 });
 
+test("Send button observation inherits the outer stage deadline", () => {
+  const source = readFileSync("src/adapters/chatgpt-web/browser-worker.ts", "utf8");
+  const send = source.slice(
+    source.indexOf("private async sendAttachedPrompt("),
+    source.indexOf("private async waitForMultipartAcknowledgement("),
+  );
+  expect(send).toContain('sendButton.waitFor({ state: "visible", timeout: 0, signal: abortSignal })');
+  expect(send).not.toContain("timeout: browserStageTimeouts.send");
+});
+
 test("ordinary Send allows delayed first evidence but remains bounded", () => {
   expect(CHATGPT_SEND_ACCEPTANCE_TIMEOUT_MS).toBe(60_000);
   expect(browserStageTimeouts.send).toBe(CHATGPT_SEND_ACCEPTANCE_TIMEOUT_MS);
