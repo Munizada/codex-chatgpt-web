@@ -26,7 +26,7 @@ This file is the canonical record for the custom reliability work maintained in
 
 ### v6.1.5-r11 audit hardening
 
-The browser now bounds `prepareRecovery` to 60 seconds and releases any recovery prompt that arrives after its stage is abandoned. The diagnostics attach a conservative `faultAttribution` field: explicit ChatGPT UI states are marked as observed UI evidence, local cancellations remain local, and timeouts, network, Playwright and parser errors remain undetermined without corroborating evidence. These classifications are evidence labels, not proof of OpenAI server culpability.
+The browser now bounds `prepareRecovery` to 60 seconds and releases any recovery prompt that arrives after its stage is abandoned. Main-branch workflow concurrency is now scoped by commit SHA so the GitHub Actions pending-run replacement rule cannot silently cancel verification for a newer `main` head. The diagnostics attach a conservative `faultAttribution` field: explicit ChatGPT UI states are marked as observed UI evidence, local cancellations remain local, and timeouts, network, Playwright and parser errors remain undetermined without corroborating evidence. These classifications are evidence labels, not proof of OpenAI server culpability.
 
 
 ### v6.1.5-r10 large inline Send budget
