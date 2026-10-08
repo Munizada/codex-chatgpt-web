@@ -2,8 +2,10 @@
   <img src="assets/readme/hero.svg" width="960" alt="Web モデルに切り替えても、Codex はそのまま。ChatGPT のプラン。いつものワークフロー。モデルの力を最大限に。">
 </p>
 
+<p align="center"><strong>Munizada フォーク (v6.1.5-r11):</strong> Windows の修正版は <a href="https://github.com/Munizada/codex-chatgpt-web/actions/workflows/patched-windows.yml">フォークの Reliability Build</a> から取得してください（GitHub へのログインが必要な場合があり、成果物には有効期限があります）。以下の macOS/Linux ボタンおよび簡易インストールコマンドは <strong>修正パッチを含まない公式 upstream 版</strong> です。</p>
+
 <p align="center">
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v6.1.5/codex-web-gpt-6.1.5-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
+  <a href="https://github.com/Munizada/codex-chatgpt-web/actions/workflows/patched-windows.yml"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
   <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v6.1.5/codex-web-gpt-6.1.5-mac-arm64.dmg"><img src="assets/readme/download-macos.svg" width="224" height="64" alt="macOS · Apple silicon"></a>&nbsp;
   <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v6.1.5/codex-web-gpt-6.1.5-linux-x64.AppImage"><img src="assets/readme/download-linux.svg" width="224" height="64" alt="Linux · x64"></a>
 </p>
