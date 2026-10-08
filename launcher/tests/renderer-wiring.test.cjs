@@ -138,6 +138,71 @@ test("normal shutdown persists the ChatGPT session before closing browser views"
   assert.ok(destroy > persist, "browser views must close only after session persistence completes");
 });
 
+test("post-runtime cleanup errors cannot reopen a half-stopped launcher", async () => {
+  const vm = require("node:vm");
+  const source = electronMain.slice(
+    electronMain.indexOf("async function finalizeLauncherQuitResources()"),
+    electronMain.indexOf("async function start()"),
+  ) + "\nthis.requestQuit = requestQuit;";
+  const events = [];
+  const context = vm.createContext({
+    shutdownInProgress: false, exitCommitted: false, quitting: false,
+    runtimeHost: { currentOperation: () => null },
+    runtimeSupervisor: { shutdown: async options => {
+      assert.deepEqual({ ...options }, { cancelActiveTurns: true, force: true });
+      events.push("runtime");
+    } },
+    browserHost: {
+      currentOperation: () => null,
+      persistSession: async () => { events.push("persist"); throw new Error("disk denied"); },
+      destroy: () => { events.push("destroy"); throw new Error("destroy denied"); },
+    },
+    browserControl: { close: async () => { events.push("control"); throw new Error("close denied"); } },
+    stopCatalogVerificationMonitor: () => { events.push("monitor"); throw new Error("monitor denied"); },
+    showMainWindow: () => events.push("reopen"),
+    publishOperation: () => events.push("failed-operation"),
+    app: { quit: () => events.push("quit") },
+    console: { error: () => events.push("warning") }, Error, JSON, String,
+  });
+  vm.runInContext(source, context);
+  const result = await context.requestQuit();
+  assert.equal(result.ok, true);
+  assert.match(result.message, /cleanup warnings/);
+  assert.deepEqual(events, ["runtime", "monitor", "persist", "destroy", "control", "warning", "quit"]);
+  assert.equal(context.exitCommitted, true);
+  assert.equal(context.quitting, true);
+  assert.equal(context.shutdownInProgress, false);
+});
+
+test("runtime shutdown failure keeps launcher open and skips post-shutdown cleanup", async () => {
+  const vm = require("node:vm");
+  const source = electronMain.slice(
+    electronMain.indexOf("async function finalizeLauncherQuitResources()"),
+    electronMain.indexOf("async function start()"),
+  ) + "\nthis.requestQuit = requestQuit;";
+  const events = [];
+  const context = vm.createContext({
+    shutdownInProgress: false, exitCommitted: false, quitting: false,
+    runtimeHost: { currentOperation: () => null },
+    runtimeSupervisor: { shutdown: async () => { events.push("runtime"); throw new Error("shutdown blocked"); } },
+    browserHost: { currentOperation: () => null, persistSession: async () => events.push("persist"), destroy: () => events.push("destroy") },
+    browserControl: { close: async () => events.push("control") },
+    stopCatalogVerificationMonitor: () => events.push("monitor"),
+    showMainWindow: () => events.push("reopen"),
+    publishOperation: operation => events.push(operation.status),
+    app: { quit: () => events.push("quit") },
+    console: { error: () => events.push("warning") }, Error, JSON, String,
+  });
+  vm.runInContext(source, context);
+  const result = await context.requestQuit();
+  assert.equal(result.ok, false);
+  assert.match(result.message, /shutdown blocked/);
+  assert.deepEqual(events, ["runtime", "reopen", "failed"]);
+  assert.equal(context.exitCommitted, false);
+  assert.equal(context.quitting, false);
+  assert.equal(context.shutdownInProgress, false);
+});
+
 test("setup preserves session-check failures and never installs without verified authentication", async () => {
   const vm = require("node:vm");
   const source = electronMain.slice(
