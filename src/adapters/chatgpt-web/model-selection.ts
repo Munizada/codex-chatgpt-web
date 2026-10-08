@@ -80,7 +80,7 @@ export function chatGptModelFamilyMatches(
   });
   return states.length > 0 && states.every(state => state.version === expected
     && (!state.name || state.name === (expected === "5.6" || effort !== "max" ? "sol" : "astra"))
-    && state.mode.toLowerCase() === ({ low: "instant", medium: "medium", high: "high", xhigh: "extra high", max: "pro" }[effort])));
+    && state.mode.toLowerCase() === ({ low: "instant", medium: "medium", high: "high", xhigh: "extra high", max: "pro" }[effort]));
 }
 
 export async function assertChatGptModelFamily(
