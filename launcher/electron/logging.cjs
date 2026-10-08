@@ -5,11 +5,15 @@ const { renameAtomicFile, writePrivateFileAtomic } = require("./atomic-file.cjs"
 const MAX_LOG_BYTES = 4 * 1024 * 1024;
 const MAX_MEMORY_RECORDS = 300;
 const MAX_LOG_STRING_CHARS = 16 * 1024;
+// Field names carrying credentials must be scrubbed both while recording and when exporting
+// older logs, where earlier launcher revisions might have persisted the unredacted value.
+const LOG_CREDENTIAL_FIELD = /(?:authorization|cookie|runtime[_-]?key|control[_-]?token|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|secret[_-]?key|auth[_-]?token)/i;
 
 function redactText(value) {
   const redacted = value
     .replace(/tunnel_[a-f0-9]{32}/g, "[tunnel-id]")
     .replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, "[runtime-key]")
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g, "[github-token]")
     .replace(/\bBearer\s+[A-Za-z0-9._~-]{20,}\b/gi, "Bearer [redacted]");
   return redacted.length > MAX_LOG_STRING_CHARS
     ? `${redacted.slice(0, MAX_LOG_STRING_CHARS)}…[truncated]`
@@ -44,7 +48,8 @@ function sanitizeForExport(value, seen = new WeakSet()) {
   return Object.fromEntries(
     Object.entries(value).map(([key, item]) => [
       key,
-      /^(?:prompt|response|html|dom|content|visibleRows|sidebarRows|sidebarTitles|conversationTitle|conversationTitles|chatTitle|chatTitles)$/i.test(key)
+      (LOG_CREDENTIAL_FIELD.test(key)
+        || /^(?:prompt|response|html|dom|content|visibleRows|sidebarRows|sidebarTitles|conversationTitle|conversationTitles|chatTitle|chatTitles)$/i.test(key))
         ? "[redacted]"
         : sanitizeForExport(item, seen),
     ]),
@@ -112,7 +117,7 @@ function sanitize(value, seen = new WeakSet()) {
   return Object.fromEntries(
     Object.entries(value).map(([key, item]) => [
       key,
-      /(?:authorization|cookie|runtimeKey|controlToken)/i.test(key)
+      LOG_CREDENTIAL_FIELD.test(key)
         ? "[redacted]"
         : sanitize(item, seen),
     ]),
