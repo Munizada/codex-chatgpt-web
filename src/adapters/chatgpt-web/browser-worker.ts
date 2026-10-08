@@ -88,6 +88,7 @@ import { MAX_CHATGPT_BROWSER_TABS } from "./concurrency";
 import {
   ChatGptCompactionHandoffAccepted,
   ChatGptWebAdapterError,
+  chatGptWebFailureAttribution,
   chatGptBrowserTabClosedError,
   chatGptRetainedConversationUnavailableError,
   chatGptStoppedThinkingError,
@@ -6554,6 +6555,13 @@ export class ChatGptBrowserWorker {
         }
         throw turn.abortSignal.reason;
       }
+      const attribution = chatGptWebFailureAttribution(error);
+      console.warn(`[chatgpt-web] browser failure_attribution ${JSON.stringify({
+        traceId: turn.traceId,
+        origin: attribution.origin,
+        evidence: attribution.evidence,
+        ...(error instanceof ChatGptWebAdapterError ? { code: error.code, retryable: error.retryable } : {}),
+      })}`);
       console.error(
         `[chatgpt-web] browser turn ${turn.traceId} failed:`
         + ` ${redactChatGptUiDiagnostic(error instanceof Error ? error.message : String(error))}`,
