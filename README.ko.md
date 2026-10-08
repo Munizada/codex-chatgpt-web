@@ -2,8 +2,10 @@
   <img src="assets/readme/hero.svg" width="960" alt="웹 모델로 전환해도, Codex는 그대로. 내 ChatGPT 플랜. 내 작업 흐름. 모델의 가능성을 최대한.">
 </p>
 
+<p align="center"><strong>Munizada 포크 (v6.1.5-r11):</strong> 패치된 Windows 버전은 <a href="https://github.com/Munizada/codex-chatgpt-web/actions/workflows/patched-windows.yml">포크 Reliability Build</a>에서 받으세요. GitHub 로그인이 필요할 수 있으며 빌드 파일은 만료됩니다. 아래 macOS/Linux 다운로드 버튼 및 간편 설치 명령은 <strong>포크 패치가 없는 공식 upstream 버전</strong>을 가리킵니다.</p>
+
 <p align="center">
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v6.1.5/codex-web-gpt-6.1.5-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
+  <a href="https://github.com/Munizada/codex-chatgpt-web/actions/workflows/patched-windows.yml"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
   <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v6.1.5/codex-web-gpt-6.1.5-mac-arm64.dmg"><img src="assets/readme/download-macos.svg" width="224" height="64" alt="macOS · Apple silicon"></a>&nbsp;
   <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v6.1.5/codex-web-gpt-6.1.5-linux-x64.AppImage"><img src="assets/readme/download-linux.svg" width="224" height="64" alt="Linux · x64"></a>
 </p>

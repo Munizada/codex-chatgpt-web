@@ -2,8 +2,10 @@
   <img src="assets/readme/hero.svg" width="960" alt="切换到网页版模型，继续使用 Codex。你的 ChatGPT 订阅。你的工作流。充分发挥模型能力。">
 </p>
 
+<p align="center"><strong>Munizada 分支 (v6.1.5-r11)：</strong>请从<a href="https://github.com/Munizada/codex-chatgpt-web/actions/workflows/patched-windows.yml">本分支的 Reliability Build 工作流</a>获取包含修复的 Windows 安装包。可能需要登录 GitHub，工作流产物会过期。下方的 macOS/Linux 下载按钮和快速安装命令指向<strong>不包含本分支补丁的官方上游版本</strong>。</p>
+
 <p align="center">
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v6.1.5/codex-web-gpt-6.1.5-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
+  <a href="https://github.com/Munizada/codex-chatgpt-web/actions/workflows/patched-windows.yml"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
   <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v6.1.5/codex-web-gpt-6.1.5-mac-arm64.dmg"><img src="assets/readme/download-macos.svg" width="224" height="64" alt="macOS · Apple silicon"></a>&nbsp;
   <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v6.1.5/codex-web-gpt-6.1.5-linux-x64.AppImage"><img src="assets/readme/download-linux.svg" width="224" height="64" alt="Linux · x64"></a>
 </p>

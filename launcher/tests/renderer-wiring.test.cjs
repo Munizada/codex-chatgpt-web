@@ -138,6 +138,112 @@ test("normal shutdown persists the ChatGPT session before closing browser views"
   assert.ok(destroy > persist, "browser views must close only after session persistence completes");
 });
 
+test("quit cannot reopen a half-stopped launcher after post-runtime cleanup failures", async () => {
+  const vm = require("node:vm");
+  const source = electronMain.slice(
+    electronMain.indexOf("async function finalizeLauncherQuitResources()"),
+    electronMain.indexOf("async function start()"),
+  ) + "\nthis.requestQuit = requestQuit;";
+  const calls = [];
+  const operations = [];
+  const context = vm.createContext({
+    shutdownInProgress: false,
+    exitCommitted: false,
+    quitting: false,
+    runtimeHost: { currentOperation: () => null },
+    runtimeSupervisor: {
+      shutdown: async options => {
+        assert.deepEqual({ ...options }, { cancelActiveTurns: true, force: true });
+        calls.push("runtime");
+      },
+    },
+    browserHost: {
+      currentOperation: () => null,
+      persistSession: async () => {
+        calls.push("persist");
+        throw new Error("synthetic cookie flush failure");
+      },
+      destroy: () => {
+        calls.push("destroy");
+        throw new Error("synthetic browser destroy failure");
+      },
+    },
+    browserControl: {
+      close: async () => {
+        calls.push("control");
+        throw new Error("synthetic control close failure");
+      },
+    },
+    stopCatalogVerificationMonitor: () => calls.push("monitor"),
+    showMainWindow: () => calls.push("show"),
+    publishOperation: operation => operations.push(operation),
+    app: { quit: () => calls.push("quit") },
+    console: { error: () => calls.push("log") },
+    Error,
+    JSON,
+    String,
+  });
+  vm.runInContext(source, context);
+
+  const result = await context.requestQuit();
+  assert.equal(result.ok, true);
+  assert.match(result.message, /cleanup warnings/);
+  assert.deepEqual(calls, ["runtime", "monitor", "persist", "destroy", "control", "log", "quit"]);
+  assert.deepEqual(operations, []);
+  assert.equal(context.quitting, true);
+  assert.equal(context.exitCommitted, true);
+  assert.equal(context.shutdownInProgress, false);
+});
+
+test("quit still stays open when runtime shutdown itself fails", async () => {
+  const vm = require("node:vm");
+  const source = electronMain.slice(
+    electronMain.indexOf("async function finalizeLauncherQuitResources()"),
+    electronMain.indexOf("async function start()"),
+  ) + "\nthis.requestQuit = requestQuit;";
+  const calls = [];
+  const operations = [];
+  const context = vm.createContext({
+    shutdownInProgress: false,
+    exitCommitted: false,
+    quitting: false,
+    runtimeHost: { currentOperation: () => null },
+    runtimeSupervisor: {
+      shutdown: async () => {
+        calls.push("runtime");
+        throw new Error("synthetic runtime shutdown failure");
+      },
+    },
+    browserHost: {
+      currentOperation: () => null,
+      persistSession: async () => calls.push("persist"),
+      destroy: () => calls.push("destroy"),
+    },
+    browserControl: { close: async () => calls.push("control") },
+    stopCatalogVerificationMonitor: () => calls.push("monitor"),
+    showMainWindow: () => calls.push("show"),
+    publishOperation: operation => operations.push(operation),
+    app: { quit: () => calls.push("quit") },
+    console: { error: () => calls.push("log") },
+    Error,
+    JSON,
+    String,
+  });
+  vm.runInContext(source, context);
+
+  const result = await context.requestQuit();
+  assert.equal(result.ok, false);
+  assert.match(result.message, /runtime shutdown failure/);
+  assert.deepEqual(calls, ["runtime", "show"]);
+  assert.equal(operations.length, 1);
+  assert.equal(operations[0].name, "launcher-quit");
+  assert.equal(operations[0].status, "failed");
+  assert.equal(operations[0].message, "synthetic runtime shutdown failure");
+  assert.equal(context.quitting, false);
+  assert.equal(context.exitCommitted, false);
+  assert.equal(context.shutdownInProgress, false);
+});
+
 test("setup preserves session-check failures and never installs without verified authentication", async () => {
   const vm = require("node:vm");
   const source = electronMain.slice(

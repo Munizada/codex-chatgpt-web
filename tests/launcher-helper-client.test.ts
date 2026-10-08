@@ -431,6 +431,166 @@ test("structured helper errors preserve the ChatGPT adapter failure contract", a
   });
 });
 
+test("duplicate stall-recovery requests are rejected before allocating another prompt", async () => {
+  const client = new LauncherBrowserHelperClient({
+    appName: "Codex Native", browserHost: "launcher",
+    browserHostDescriptorPath: "/unused", storageStatePath: "/unused",
+    chromeExecutablePath: "/unused", headed: true, autoApproveToolCalls: false, useSavedChats: false,
+  });
+  const internal = client as unknown as {
+    child: unknown;
+    pending: Map<string, { turn: BrowserTurn; resolve(value: string): void; reject(error: Error): void }>;
+    send(message: Record<string, unknown>): Promise<void>;
+    handleLine(child: unknown, line: string): void;
+  };
+  const child = {};
+  internal.child = child;
+  const sent: Record<string, unknown>[] = [];
+  internal.send = async message => { sent.push(message); };
+  let preparations = 0;
+  let releaseCount = 0;
+  const traceId = "duplicate-recovery";
+  const response = new Promise<string>((resolve, reject) => {
+    internal.pending.set(traceId, {
+      turn: {
+        traceId, modelId: "gpt-5.6-sol",
+        capabilities: { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false },
+        prepare: async () => ({ text: "test", images: [], release() {} }),
+        prepareRecovery: async () => {
+          preparations += 1;
+          return { text: "continue", images: [], release() { releaseCount += 1; } };
+        },
+        onTextDelta() {},
+      },
+      resolve, reject,
+    });
+  });
+  const rejected = response.then(() => undefined, error => error as Error);
+  const frame = JSON.stringify({ type: "event", id: traceId, event: "recovery_prepare_requested" });
+  internal.handleLine(child, frame);
+  internal.handleLine(child, frame);
+  await new Promise<void>(resolve => setTimeout(resolve, 0));
+  expect(sent).toContainEqual({ type: "abort", id: traceId });
+  expect(sent.some(message => message.type === "recovery_prepared_ack")).toBe(false);
+  expect(preparations).toBe(1);
+  internal.handleLine(child, JSON.stringify({ type: "error", id: traceId, message: "aborted" }));
+  expect((await rejected)?.message).toContain("duplicate stall-recovery prompt");
+  expect(releaseCount).toBe(1);
+});
+
+test("a broken MCP progress forwarding channel terminates the affected turn", async () => {
+  const client = new LauncherBrowserHelperClient({
+    appName: "Codex Native", browserHost: "launcher",
+    browserHostDescriptorPath: "/unused", storageStatePath: "/unused",
+    chromeExecutablePath: "/unused", headed: true, autoApproveToolCalls: false, useSavedChats: false,
+  });
+  const internal = client as unknown as {
+    child: unknown;
+    helperFeatures: Set<string>;
+    pending: Map<string, { turn: BrowserTurn; resolve(value: string): void; reject(error: Error): void }>;
+    send(message: Record<string, unknown>): Promise<void>;
+    forwardProgress(turn: BrowserTurn, stop: AbortSignal): void;
+    handleLine(child: unknown, line: string): void;
+  };
+  const child = {};
+  internal.child = child;
+  internal.helperFeatures = new Set(["progress"]);
+  const sent: Record<string, unknown>[] = [];
+  internal.send = async message => { sent.push(message); };
+  const turn: BrowserTurn = {
+    traceId: "progress-broken", modelId: "gpt-5.6-sol",
+    capabilities: { localToolsEnabled: true, solAvailable: true, extraHighAvailable: false, proAvailable: false },
+    prepare: async () => ({ text: "test", images: [], release() {} }),
+    externalProgress: {
+      snapshot: () => ({ revision: 0, lastToolBatchRevision: 0, activeToolCalls: 0 }),
+      waitForChange: async () => { throw new Error("progress transport disconnected"); },
+      acknowledgeToolBatch: async () => {},
+    },
+    onTextDelta() {},
+  };
+  const result = new Promise<string>((resolve, reject) => {
+    internal.pending.set(turn.traceId, { turn, resolve, reject });
+  });
+  const rejected = result.then(() => undefined, error => error as Error);
+  internal.forwardProgress(turn, new AbortController().signal);
+  await new Promise<void>(resolve => setTimeout(resolve, 0));
+  expect(sent).toContainEqual({ type: "abort", id: turn.traceId });
+  internal.handleLine(child, JSON.stringify({ type: "error", id: turn.traceId, message: "helper aborted" }));
+  expect((await rejected)?.message).toContain("progress transport disconnected");
+});
+
+test("helper lifecycle callbacks fail closed without escaping the IPC reader", async () => {
+  for (const event of ["heartbeat", "text", "submitted", "reasoning"] as const) {
+    const client = new LauncherBrowserHelperClient({
+      appName: "Codex Native", browserHost: "launcher",
+      browserHostDescriptorPath: "/unused", storageStatePath: "/unused",
+      chromeExecutablePath: "/unused", headed: true, autoApproveToolCalls: false, useSavedChats: false,
+    });
+    const internal = client as unknown as {
+      child: unknown;
+      pending: Map<string, { turn: BrowserTurn; resolve(value: string): void; reject(error: Error): void }>;
+      send(message: Record<string, unknown>): Promise<void>;
+      handleLine(child: unknown, line: string): void;
+    };
+    const child = {};
+    internal.child = child;
+    const sent: Record<string, unknown>[] = [];
+    internal.send = async message => { sent.push(message); };
+    const traceId = "callback-" + event;
+    const fault = new Error("callback failure: " + event);
+    const response = new Promise<string>((resolve, reject) => {
+      internal.pending.set(traceId, {
+        turn: {
+          traceId, modelId: "gpt-5.6-sol",
+          capabilities: { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false },
+          prepare: async () => ({ text: "test", images: [], release() {} }),
+          onTextDelta: () => { throw fault; },
+          onHeartbeat: () => { throw fault; },
+          onSubmitted: () => Promise.reject(fault),
+          onReasoningSummary: () => { throw fault; },
+        },
+        resolve, reject,
+      });
+    });
+    const rejected = response.then(() => undefined, error => error as Error);
+    expect(() => internal.handleLine(child, JSON.stringify({ type: "event", id: traceId, event, text: "test" })))
+      .not.toThrow();
+    await new Promise<void>(resolve => setTimeout(resolve, 0));
+    expect(sent).toContainEqual({ type: "abort", id: traceId });
+    internal.handleLine(child, JSON.stringify({ type: "error", id: traceId, message: "helper aborted" }));
+    expect(await rejected).toBe(fault);
+  }
+});
+
+test("helper without MCP progress mirroring is rejected before dispatch", async () => {
+  const client = new LauncherBrowserHelperClient({
+    appName: "Codex Native", browserHost: "launcher",
+    browserHostDescriptorPath: "/unused", storageStatePath: "/unused",
+    chromeExecutablePath: "/unused", headed: true, autoApproveToolCalls: false, useSavedChats: false,
+  });
+  const internal = client as unknown as {
+    ensureChild(): Promise<void>;
+    helperFeatures: Set<string>;
+    send(message: unknown): Promise<void>;
+  };
+  internal.ensureChild = async () => {};
+  internal.helperFeatures = new Set(["tool-boundary-ack", "completion-fence"]);
+  let dispatched = false;
+  internal.send = async () => { dispatched = true; };
+  await expect(client.run({
+    traceId: "missing-progress", modelId: "gpt-5.6-sol",
+    capabilities: { localToolsEnabled: true, solAvailable: true, extraHighAvailable: false, proAvailable: false },
+    prepare: async () => ({ text: "test", images: [], release() {} }),
+    externalProgress: {
+      snapshot: () => ({ revision: 0, lastToolBatchRevision: 0, activeToolCalls: 0 }),
+      waitForChange: async () => ({ revision: 1, lastToolBatchRevision: 1, activeToolCalls: 1, lastProgressAt: 1 }),
+      acknowledgeToolBatch: async () => {},
+    },
+    onTextDelta() {},
+  })).rejects.toThrow("cannot mirror Codex MCP progress");
+  expect(dispatched).toBe(false);
+});
+
 test("an older helper cannot silently drop selected skill files and releases the prepared turn", async () => {
   const client = new LauncherBrowserHelperClient({
     appName: "Codex Native2", browserHost: "launcher", browserHostDescriptorPath: "/durable/launcher.json",

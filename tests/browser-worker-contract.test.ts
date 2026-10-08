@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
@@ -936,6 +936,11 @@ test("Bigger Context send activation keeps the outer stage budget instead of res
       baseline: unknown,
       capture?: (checkpoint: string) => Promise<void>,
       signal?: AbortSignal,
+      progress?: unknown,
+      lifecycle?: unknown,
+      tracker?: unknown,
+      recover?: unknown,
+      traceId?: string,
     ): Promise<string>;
   };
   const hiddenLocator = {
@@ -948,6 +953,11 @@ test("Bigger Context send activation keeps the outer stage budget instead of res
     locator: () => hiddenLocator,
   } as unknown as Page;
   let pressOptions: { noWaitAfter?: boolean; signal?: AbortSignal; timeout?: number } | undefined;
+  const milestones: string[] = [];
+  const logs = spyOn(console, "info").mockImplementation((...args) => {
+    const message = args.map(String).join(" ");
+    if (message.includes("browser turn send-boundary-test ")) milestones.push(message.split("send-boundary-test ")[1]!);
+  });
   const sendButton = {
     waitFor: async () => {},
     isEnabled: async () => true,
@@ -956,22 +966,36 @@ test("Bigger Context send activation keeps the outer stage budget instead of res
       options?: { noWaitAfter?: boolean; signal?: AbortSignal; timeout?: number },
     ) => {
       pressOptions = options;
+      milestones.push("Enter pressed");
       if (options?.timeout !== 0) throw new Error("nested locator timeout replaced the outer stage budget");
     },
   };
   worker.activeComposer = async () => ({
     locator: () => ({ locator: (selector: string) => { expect(selector).toBe(CHATGPT_SEND_BUTTON_SELECTOR); return sendButton; } }),
   });
-  worker.waitForSubmissionAcceptedWithRecovery = async () => "user_turn";
+  worker.waitForSubmissionAcceptedWithRecovery = async () => {
+    milestones.push("acceptance evidence observed");
+    return "user_turn";
+  };
 
-  await expect(worker.runStage(
-    "multipart-send-budget",
-    "send",
-    1_000,
-    stageSignal => worker.sendAttachedPrompt(page, {}, undefined, stageSignal),
-  )).resolves.toBe("user_turn");
-  expect(pressOptions).toMatchObject({ noWaitAfter: true, timeout: 0 });
-  expect(pressOptions?.signal).toBeInstanceOf(AbortSignal);
+  try {
+    await expect(worker.runStage(
+      "multipart-send-budget",
+      "send",
+      1_000,
+      stageSignal => worker.sendAttachedPrompt(page, {}, undefined, stageSignal, undefined, undefined, undefined, undefined, "send-boundary-test"),
+    )).resolves.toBe("user_turn");
+    expect(pressOptions).toMatchObject({ noWaitAfter: true, timeout: 0 });
+    expect(pressOptions?.signal).toBeInstanceOf(AbortSignal);
+    expect(milestones).toEqual([
+      "send_activation_acknowledged",
+      "Enter pressed",
+      "send_keypress_returned",
+      "acceptance evidence observed",
+    ]);
+  } finally {
+    logs.mockRestore();
+  }
 });
 
 test("two-part saved chats re-prove unchanged effort after the first message creates the conversation URL", async () => {
@@ -3108,7 +3132,7 @@ test("effort readback rejects a changed selection or surface before activating S
     { editable: false }, { count: 2 }]) {
     Object.assign(state, { url: selection.url, label: "Alto", expanded: "false", editable: true, count: 1 }, change);
     await expect(worker.assertSelectedEffort(page, mode)).rejects.toMatchObject({
-      code: "upstream_server_error", retryable: false,
+      code: "chatgpt_model_control_unavailable", retryable: false,
     });
   }
 });

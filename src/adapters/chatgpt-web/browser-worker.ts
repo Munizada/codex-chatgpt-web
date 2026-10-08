@@ -83,6 +83,7 @@ import {
   resolveChatGptWebTransportLimits,
 } from "../../chatgpt-web-models";
 import { LauncherBrowserHelperClient } from "./launcher-helper-client";
+import { attributeChatGptWebFailure } from "./failure-attribution";
 import { assertChatGptModelFamily, selectChatGptModelFamily } from "./model-selection";
 import { MAX_CHATGPT_BROWSER_TABS } from "./concurrency";
 import {
@@ -232,7 +233,7 @@ function chatGptModelControlUnavailableAdapterError(diagnostic: string, detail?:
     {
       status: 502,
       errorType: "server_error",
-      code: "upstream_server_error",
+      code: "chatgpt_model_control_unavailable",
       retryable: false,
       cause: new Error(diagnostic),
     },
@@ -4160,6 +4161,7 @@ export class ChatGptBrowserWorker {
     submissionLifecycle?: Pick<BrowserTurn, "onSendActivated" | "onSubmitted">,
     completionTracker?: ChatGptCompletionTracker,
     recoverObservation?: ChatGptObservationRecovery,
+    traceId?: string,
   ): Promise<ChatGptSubmissionEvidence> {
     const composer = await this.activeComposer(page);
     const sendButton = composer
@@ -4183,6 +4185,7 @@ export class ChatGptBrowserWorker {
     await captureDiagnostic?.("send-ready");
     const initialToolBatchRevision = externalProgress?.snapshot().lastToolBatchRevision ?? 0;
     await submissionLifecycle?.onSendActivated?.();
+    if (traceId) console.info(`[chatgpt-web] browser turn ${traceId} send_activation_acknowledged`);
     await sendButton.press("Enter", {
       noWaitAfter: true,
       signal: abortSignal,
@@ -4191,6 +4194,7 @@ export class ChatGptBrowserWorker {
       // submitted the message; semantic submission evidence below remains the authority.
       timeout: 0,
     });
+    if (traceId) console.info(`[chatgpt-web] browser turn ${traceId} send_keypress_returned`);
     const evidence = await this.waitForSubmissionAcceptedWithRecovery(
       page,
       baseline,
@@ -5664,6 +5668,7 @@ export class ChatGptBrowserWorker {
                   return recovered;
                 }
                 : undefined,
+              turn.traceId,
             ),
           );
           console.info(
@@ -5813,6 +5818,7 @@ export class ChatGptBrowserWorker {
                     return recovered;
                   }
                   : undefined,
+                turn.traceId,
               ),
             );
             console.warn(
@@ -5962,6 +5968,7 @@ export class ChatGptBrowserWorker {
               return recovered;
             }
             : undefined,
+          turn.traceId,
         ),
         chatGptSuspensionClock,
         false,
@@ -6288,6 +6295,7 @@ export class ChatGptBrowserWorker {
                     return recovered;
                   }
                   : undefined,
+                turn.traceId,
               ),
               chatGptSuspensionClock,
               false,
@@ -6557,6 +6565,12 @@ export class ChatGptBrowserWorker {
       console.error(
         `[chatgpt-web] browser turn ${turn.traceId} failed:`
         + ` ${redactChatGptUiDiagnostic(error instanceof Error ? error.message : String(error))}`,
+      );
+      // Attribution is deliberately evidence-limited: a Send deadline or DOM mismatch must
+      // never be reported as a confirmed OpenAI outage solely because it happened on ChatGPT.
+      console.error(
+        `[chatgpt-web] browser turn ${turn.traceId} failure_attribution=`
+        + JSON.stringify(attributeChatGptWebFailure(error)),
       );
       if (diagnosticPage && !diagnosticPage.isClosed()) {
         await diagnostics.capture(diagnosticPage, "turn-failed", error);

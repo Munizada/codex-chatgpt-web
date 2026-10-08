@@ -1054,6 +1054,26 @@ function registerIpc({ logger, stateStore }) {
   });
 }
 
+async function finalizeLauncherQuitResources() {
+  const failures = [];
+  try {
+    await browserHost?.persistSession();
+  } catch (error) {
+    failures.push({ stage: "persist-session", message: error instanceof Error ? error.message : String(error) });
+  }
+  try {
+    browserHost?.destroy();
+  } catch (error) {
+    failures.push({ stage: "destroy-browser", message: error instanceof Error ? error.message : String(error) });
+  }
+  try {
+    await browserControl?.close();
+  } catch (error) {
+    failures.push({ stage: "close-control", message: error instanceof Error ? error.message : String(error) });
+  }
+  return failures;
+}
+
 async function requestQuit() {
   if (shutdownInProgress || exitCommitted) {
     return { ok: false, message: "Launcher shutdown is already in progress" };
@@ -1064,15 +1084,24 @@ async function requestQuit() {
     if (activeOperation) {
       throw new Error(`Wait for ${activeOperation} to finish before quitting Codex Web GPT`);
     }
+    // Runtime shutdown is the point of no return. A later browser or session cleanup failure
+    // cannot safely reopen a launcher whose managed runtime was already shut down.
     await runtimeSupervisor?.shutdown({ cancelActiveTurns: true, force: true });
     stopCatalogVerificationMonitor();
     quitting = true;
-    await browserHost?.persistSession();
-    browserHost?.destroy();
-    await browserControl?.close();
+    const cleanupFailures = await finalizeLauncherQuitResources();
     exitCommitted = true;
+    if (cleanupFailures.length > 0) {
+      try {
+        console.error(`[launcher] quit cleanup completed with warnings: ${JSON.stringify(cleanupFailures)}`);
+      } catch {
+        // Logging must never reopen a launcher after the runtime has already stopped.
+      }
+    }
     app.quit();
-    return { ok: true };
+    return cleanupFailures.length > 0
+      ? { ok: true, message: "Launcher is closing after non-fatal cleanup warnings" }
+      : { ok: true };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     quitting = false;

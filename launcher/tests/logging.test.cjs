@@ -24,6 +24,39 @@ test("launcher logs redact tunnel ids, runtime keys, and bearer credentials", ()
   });
 });
 
+test("launcher diagnostic logs never retain common API credentials or GitHub tokens", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-credential-redaction-"));
+  const filePath = path.join(root, "launcher.jsonl");
+  const destinationPath = path.join(root, "diagnostics.jsonl");
+  const githubToken = "ghp_" + "T".repeat(36);
+  try {
+    const logger = createLogger({ filePath });
+    logger.info("credential-probe", {
+      apiKey: "plain-api-key",
+      refreshToken: "plain-refresh-token",
+      client_secret: "plain-client-secret",
+      password: "plain-password",
+      metrics: { tokenCount: 3 },
+      line: "GitHub token: " + githubToken,
+    });
+    // Older launcher versions could have written raw credential fields in existing logs.
+    fs.appendFileSync(filePath, JSON.stringify({
+      at: "2026-10-07T00:00:00Z", level: "error", event: "legacy",
+      detail: { access_token: "legacy-access-token", authToken: "legacy-auth", api_key: "legacy-api-key" },
+    }) + "\n");
+    assert.equal(exportSanitizedLogs({ filePath, destinationPath }), 2);
+    const exported = fs.readFileSync(destinationPath, "utf8");
+    for (const sensitive of ["plain-api-key", "plain-refresh-token", "plain-client-secret",
+      "plain-password", githubToken, "legacy-access-token", "legacy-auth", "legacy-api-key"]) {
+      assert.equal(exported.includes(sensitive), false, sensitive);
+    }
+    assert.match(exported, /"tokenCount":3/);
+    assert.match(exported, /\[github-token\]/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("failed launcher IPC calls are written to runtime activity", async () => {
   let registered;
   const errors = [];
