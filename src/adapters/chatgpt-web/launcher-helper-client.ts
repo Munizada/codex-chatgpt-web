@@ -608,7 +608,7 @@ export class LauncherBrowserHelperClient {
         const prepare = message.reused ? pending.turn.prepareResume : pending.turn.prepare;
         void Promise.resolve().then(() => prepare?.()).then(prepared => {
           if (!prepared) throw new Error("Launcher browser helper selected an unavailable continuation prompt");
-          if (this.pending.get(message.id) !== pending) {
+          if (this.pending.get(message.id) !== pending || pending.localFailure || pending.turn.abortSignal?.aborted) {
             prepared.release();
             return;
           }
@@ -649,7 +649,7 @@ export class LauncherBrowserHelperClient {
         }
         pending.recoveryPreparationRequested = true;
         void Promise.resolve().then(() => pending.turn.prepareRecovery!()).then(prepared => {
-          if (this.pending.get(message.id) !== pending) {
+          if (this.pending.get(message.id) !== pending || pending.localFailure || pending.turn.abortSignal?.aborted) {
             prepared.release();
             return;
           }
