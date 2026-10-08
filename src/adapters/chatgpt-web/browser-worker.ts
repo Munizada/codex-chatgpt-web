@@ -83,6 +83,7 @@ import {
   resolveChatGptWebTransportLimits,
 } from "../../chatgpt-web-models";
 import { LauncherBrowserHelperClient } from "./launcher-helper-client";
+import { attributeChatGptWebFailure } from "./failure-attribution";
 import { assertChatGptModelFamily, selectChatGptModelFamily } from "./model-selection";
 import { MAX_CHATGPT_BROWSER_TABS } from "./concurrency";
 import {
@@ -232,7 +233,7 @@ function chatGptModelControlUnavailableAdapterError(diagnostic: string, detail?:
     {
       status: 502,
       errorType: "server_error",
-      code: "upstream_server_error",
+      code: "chatgpt_model_control_unavailable",
       retryable: false,
       cause: new Error(diagnostic),
     },
@@ -6557,6 +6558,12 @@ export class ChatGptBrowserWorker {
       console.error(
         `[chatgpt-web] browser turn ${turn.traceId} failed:`
         + ` ${redactChatGptUiDiagnostic(error instanceof Error ? error.message : String(error))}`,
+      );
+      // Attribution is deliberately evidence-limited: a Send deadline or DOM mismatch must
+      // never be reported as a confirmed OpenAI outage solely because it happened on ChatGPT.
+      console.error(
+        `[chatgpt-web] browser turn ${turn.traceId} failure_attribution=`
+        + JSON.stringify(attributeChatGptWebFailure(error)),
       );
       if (diagnosticPage && !diagnosticPage.isClosed()) {
         await diagnostics.capture(diagnosticPage, "turn-failed", error);
