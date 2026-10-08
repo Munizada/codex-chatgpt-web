@@ -18,6 +18,7 @@
 | Official 6.1.5 died at 20-second Send boundary | Premature local Send observation deadline | r8 60-second bounded initial acceptance window | A very large inline message can still exceed 60 seconds |
 | r8 recognized Send/tools but had `prepareRecovery=false` in helper | Daemon-only recovery callback not transported across IPC | r9 negotiated helper recovery request/ack | Recovery preparation itself had no specific deadline |
 | r9 timed out on ~247k-character inline Send at ~60 seconds | Fixed 60-second Send stage even for large inline context | r10 payload-aware 180-second ceiling for large inline turns | Timeout with no acceptance evidence is **indeterminate**, not proof of a server outage |
+| Main CI jobs were cancelled despite later main commit | Actions concurrency shared one pending group for all main SHAs | r11 isolates `main` workflow groups per SHA, retains PR supersession | Each release still needs a successful end-to-end CI run for its exact commit |
 | Recovery prompt preparation can await IPC indefinitely | No timeout around `prepareRecovery` | r11 bounded stage, late prompt lease release | Unknown remote delay can still lead to a fail-closed outcome |
 | Browser failures lack explicit provenance evidence | Generic errors alone cannot distinguish local, browser/transport and backend | r11 diagnostic fault attribution for confirmed UI/control cases and undetermined others | An observed UI state is not proof of the underlying OpenAI infrastructure root cause |
 
