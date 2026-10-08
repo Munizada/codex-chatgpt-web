@@ -577,7 +577,8 @@ export class LauncherBrowserHelperClient {
       else if (message.event === "submitted") {
         // A callback is part of the daemon's execution contract. Neither synchronous exceptions
         // nor rejected async callbacks may escape the stdout listener or go unobserved.
-        void Promise.resolve().then(() => pending.turn.onSubmitted?.()).catch(error => this.abortWithLocalFailure(
+        const submitted = pending.turn.onSubmitted?.();
+        void Promise.resolve(submitted).catch(error => this.abortWithLocalFailure(
           message.id,
           error instanceof Error ? error : new Error(String(error)),
           pending,
