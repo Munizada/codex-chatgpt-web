@@ -111,6 +111,36 @@ describe("native /models augmentation", () => {
     expect(pro.auto_compact_token_limit).toBe(285_000);
   });
 
+  test("publishes measured GPT-6 context by account and effort while preserving GPT-5.6 and Pro budgets", () => {
+    for (const proAvailable of [false, true]) {
+      const config = {
+        ...defaultConfig("full"), proAvailable, extraHighAvailable: proAvailable,
+        experimentalBiggerContext: true,
+      };
+      const models = augmentNativeModelCatalog(source(), config).models as Array<Record<string, unknown>>;
+      for (const [suffix, window, compact] of [
+        ["sol-instant", proAvailable ? 111_193 : 41_000, proAvailable ? 95_000 : 32_000],
+        ["sol", proAvailable ? 111_193 : 90_000, proAvailable ? 95_000 : 80_000],
+      ] as const) {
+        const six = models.find(model => model.slug === `chatgpt-web/gpt-6-${suffix}`)!;
+        const expanded = proAvailable && suffix === "sol";
+        expect(six).toMatchObject({ context_window: expanded ? 240_000 : window,
+          max_context_window: expanded ? 240_000 : window, auto_compact_token_limit: expanded ? 220_000 : compact });
+        expect(six.description).toContain("standard context");
+        expect(models.find(model => model.slug === `chatgpt-web/gpt-5.6-${suffix}`)).toMatchObject({
+          context_window: window * 3, auto_compact_token_limit: compact * 3,
+        });
+      }
+      if (proAvailable) {
+        for (const family of ["5.6", "6"]) {
+          expect(models.find(model => model.slug === `chatgpt-web/gpt-${family}-pro`)).toMatchObject({
+            context_window: 336_579, auto_compact_token_limit: 285_000,
+          });
+        }
+      }
+    }
+  });
+
   test("keeps native Sol selectable in the bounded Compatibility V1 registry", () => {
     const config = defaultConfig("full");
     config.subagentProtocol = "compatibility-v1";
@@ -132,9 +162,9 @@ describe("native /models augmentation", () => {
 
     expect(spawnOverrides).toEqual([
       "gpt-5.6-sol",
+      "chatgpt-web/gpt-6-sol",
       "chatgpt-web/gpt-5.6-sol",
       "chatgpt-web/gpt-5.6-pro",
-      "chatgpt-web/gpt-6-sol",
       "chatgpt-web/gpt-6-pro",
     ]);
     expect(models.find(model => model.slug === "chatgpt-web/light")?.priority).toBe(3);
@@ -186,8 +216,8 @@ describe("native /models augmentation", () => {
     const models = second.models as Array<Record<string, unknown>>;
     const web = models.filter(model => String(model.slug).startsWith("chatgpt-web/"));
     expect(web.map(model => model.slug)).toEqual([
-      "chatgpt-web/gpt-5.6-sol-instant", "chatgpt-web/gpt-5.6-sol",
       "chatgpt-web/gpt-6-sol-instant", "chatgpt-web/gpt-6-sol",
+      "chatgpt-web/gpt-5.6-sol-instant", "chatgpt-web/gpt-5.6-sol",
       "chatgpt-web/light", "chatgpt-web/medium", "chatgpt-web/high", "chatgpt-web/extra-high",
     ]);
     expect(web.every(model => model.tool_mode === null)).toBe(true);
