@@ -21,6 +21,17 @@ function familyOption(menu: EffortMenu, family: ChatGptWebModelFamily) {
   });
 }
 
+/**
+ * An active versioned slider/header proves the family even when the picker is a
+ * single power control with no model radio rows. Never rely on an unversioned
+ * effort announcement (or on a stale inactive model row) as model evidence.
+ */
+async function activePickerProvesFamily(menu: EffortMenu, family: ChatGptWebModelFamily): Promise<boolean> {
+  const descriptions = await readChatGptModelAnnouncements(menu.slider);
+  return (["low", "medium", "high", "xhigh", "max"] as const)
+    .some(effort => chatGptModelFamilyMatches(descriptions, family, effort));
+}
+
 /** Model and effort are separate browser controls; a generic Pro label proves neither family. */
 export async function selectChatGptModelFamily(
   menu: EffortMenu,
@@ -28,6 +39,9 @@ export async function selectChatGptModelFamily(
   activate: () => Promise<EffortMenu>,
 ): Promise<EffortMenu> {
   try {
+    // Current ChatGPT pickers can have no family radio at all. The versioned
+    // active slider is stronger evidence than an inactive or absent radio row.
+    if (await activePickerProvesFamily(menu, family)) return menu;
     const option = familyOption(menu, family);
     if (await option.count() > 1) throw familyError(family);
     if (await option.count() === 1 && await option.getAttribute("aria-checked") === "true") return menu;
@@ -36,12 +50,12 @@ export async function selectChatGptModelFamily(
     if (await powerView.count() === 1) {
       const view = await powerView.getAttribute("data-model-picker-view");
       if (view === "simple") {
-        const trigger = powerView.locator('[data-model-picker-view-toggle="true"][aria-hidden="false"]');
+        const trigger = powerView.locator('[data-model-picker-view-toggle="true"]').filter({ visible: true });
         if (await trigger.count() !== 1) throw familyError(family);
         await trigger.click({ timeout: 5_000 });
       } else if (view !== "advanced") throw familyError(family);
     } else {
-      const trigger = menu.menu.locator('[role="menuitem"][aria-expanded][aria-hidden="false"]');
+      const trigger = menu.menu.locator('[role="menuitem"][aria-expanded]').filter({ visible: true });
       if (await powerView.count() !== 0 || await trigger.count() !== 1) throw familyError(family);
       if (await trigger.getAttribute("aria-expanded") === "false") await trigger.click({ timeout: 5_000 });
     }
@@ -53,6 +67,7 @@ export async function selectChatGptModelFamily(
     const selected = await activate();
     const deadline = Date.now() + 1_000;
     do {
+      if (await activePickerProvesFamily(selected, family)) return selected;
       const current = familyOption(selected, family);
       if (await current.count() > 1) throw familyError(family);
       if (await current.count() === 1 && await current.getAttribute("aria-checked") === "true") return selected;
@@ -92,14 +107,15 @@ export async function assertChatGptModelFamily(
 ): Promise<void> {
   const deadline = Date.now() + settleMs;
   do {
-    const option = familyOption(menu, family);
-    const checked = await option.count() === 1 && await option.getAttribute("aria-checked") === "true";
+    // ChatGPT may expose model version only in the active slider header, while
+    // its radio rows are inert, missing, or renamed. Require the exact version
+    // AND effort from the active picker instead of an unrelated radio flag.
     const state = parseChatGptEffortSliderState(
       await menu.slider.getAttribute("aria-valuemin"), await menu.slider.getAttribute("aria-valuemax"),
       await menu.slider.getAttribute("aria-valuenow"),
     );
     const descriptions = await readChatGptModelAnnouncements(menu.slider);
-    if (checked && state && state.value === state.min + effortIndex && chatGptModelFamilyMatches(descriptions, family, effort)) return;
+    if (state && state.value === state.min + effortIndex && chatGptModelFamilyMatches(descriptions, family, effort)) return;
     if (Date.now() >= deadline) break;
     await new Promise(resolve => setTimeout(resolve, 50));
   } while (true);

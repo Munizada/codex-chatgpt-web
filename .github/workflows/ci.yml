@@ -57,6 +57,13 @@ jobs:
         if: runner.os == 'Linux'
         run: bun run launcher/scripts/prepare-linux-appimage-tools.cjs
       - run: bun run verify
+      - name: Verify ChatGPT model picker in a real headless browser
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          chrome="$(command -v google-chrome || command -v chromium || true)"
+          test -n "$chrome"
+          CHATGPT_DOM_TEST_BROWSER="$chrome" bun test tests/chatgpt-model-family-browser.test.ts
       - run: bun run app:package
       - name: Verify Linux AppImage ABI on current Arch
         if: runner.os == 'Linux'
