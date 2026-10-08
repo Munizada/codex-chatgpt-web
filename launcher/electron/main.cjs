@@ -1057,6 +1057,11 @@ function registerIpc({ logger, stateStore }) {
 async function finalizeLauncherQuitResources() {
   const failures = [];
   try {
+    stopCatalogVerificationMonitor();
+  } catch (error) {
+    failures.push({ stage: "stop-catalog-monitor", message: error instanceof Error ? error.message : String(error) });
+  }
+  try {
     await browserHost?.persistSession();
   } catch (error) {
     failures.push({ stage: "persist-session", message: error instanceof Error ? error.message : String(error) });
@@ -1087,10 +1092,10 @@ async function requestQuit() {
     // Runtime shutdown is the point of no return: reopening the launcher after this succeeds
     // leaves its window alive with a stopped runtime. Remaining cleanup is best effort.
     await runtimeSupervisor?.shutdown({ cancelActiveTurns: true, force: true });
-    stopCatalogVerificationMonitor();
+    // Persist the one-way state transition *before* any optional cleanup.
     quitting = true;
-    const cleanupFailures = await finalizeLauncherQuitResources();
     exitCommitted = true;
+    const cleanupFailures = await finalizeLauncherQuitResources();
     if (cleanupFailures.length > 0) {
       try {
         console.error(`[launcher] quit cleanup completed with warnings: ${JSON.stringify(cleanupFailures)}`);
