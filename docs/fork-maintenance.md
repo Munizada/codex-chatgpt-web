@@ -22,7 +22,7 @@ This file is the canonical record for the custom reliability work maintained in
 - Native upstream base: **v6.1.5**
 - Upstream v6.1.5 release commit integrated into this fork:
   `92a356fac2292e3af5a97ab7ba634edd8d38621e`
-- Fork reliability revision: **v6.1.5-r10**
+- Fork reliability revision: **v6.1.5-r11**
 
 ### v6.1.5-r10 large inline Send budget
 
@@ -167,23 +167,36 @@ re-key, and redundant full model-picker verification on every inert context
 part. The first staged receipt deliberately keeps the larger historical safety
 window rather than trading reliability for a few seconds.
 
-## Temporary dependency-audit exception
+## Dependency audit enforcement
 
-As of 2026-10-03, GitHub Advisory `GHSA-ch52-4w7c-c8xp` affects
-`http-cache-semantics <=4.2.0` and has no published patched npm version. In
-this repository it is reachable only through launcher build-time
-`devDependencies` (`electron -> @electron/get -> got -> cacheable-request`
-and the equivalent `electron-builder` path).
+Both root and launcher use `bun audit` without an ignored-advisory exception.
+The launcher overrides `http-cache-semantics` to 4.3.0; the former
+`GHSA-ch52-4w7c-c8xp` exception is historical and no longer applied.
+Do not reintroduce an audit exception without a new documented risk decision.
 
-The launcher audit therefore:
+## Evidence-based incident attribution
 
-1. runs `bun audit --prod` with no exception for shipped production
-   dependencies;
-2. runs the full audit while ignoring only
-   `GHSA-ch52-4w7c-c8xp`.
+The bridge records a `browser failure_attribution` diagnostic entry.
+`chatgpt_surface_observed` means the current ChatGPT interface exposed an
+identifiable state; it does **not** prove that OpenAI's backend caused it.
+`bridge_contract` means a concrete local helper compatibility failure;
+`client_cancelled` indicates a turn cancellation; and `undetermined` is
+used when the logs cannot establish root cause. A Send timeout is by itself
+`undetermined`. Use the trace ID and browser diagnostic checkpoint with
+the error rather than relying on a generic HTTP-style status.
 
-Any other production or development advisory still fails verification. Remove
-this exception as soon as a patched dependency chain is published.
+## v6.1.5-r11 reliability audit changes
+
+- Launcher quit now crosses an explicit point of no return after runtime
+  shutdown; follow-up cleanup errors cannot reopen a dead runtime.
+- The quit path attempts all cleanup stages and falls back to immediate
+  process exit if Electron's normal quit throws.
+- The launcher helper rejects duplicate recovery frames before starting
+  asynchronous prompt compilation.
+- The browser logs conservative evidence-scoped failure attribution and retry
+  exhaustion does not automatically blame OpenAI.
+- Tests cover forced cleanup failures, rejected shutdown, emergency exit,
+  duplicate helper recovery and ambiguous failure attribution.
 
 ## Validation contract
 
