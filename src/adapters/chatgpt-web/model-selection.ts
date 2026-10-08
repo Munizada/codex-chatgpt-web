@@ -15,7 +15,7 @@ function familyOption(menu: EffortMenu, family: ChatGptWebModelFamily) {
   return menu.menu.getByRole("menuitemradio", {
     name: family === "5.6" ? /^GPT[-\s]?5\.6\s+Sol(?:\s+Pro)?$/i
       // Simplified/Traditional Chinese and Japanese share 最新; Korean uses 최신.
-      : /^(?:Latest|最新|최신|GPT[-\s]?6(?:\s+Sol)?|GPT[-\s]?6(?:\s+Astra)?\s+Pro)$/i,
+      : /^(?:Latest|最新|최신|(?:GPT[-\s]?)?6(?:\s+Sol)?|GPT[-\s]?6(?:\s+Astra)?\s+Pro)$/i,
     exact: true,
     includeHidden: true,
   });
@@ -50,12 +50,12 @@ export async function selectChatGptModelFamily(
     if (await powerView.count() === 1) {
       const view = await powerView.getAttribute("data-model-picker-view");
       if (view === "simple") {
-        const trigger = powerView.locator('[data-model-picker-view-toggle="true"]').filter({ visible: true });
+        const trigger = powerView.locator('[data-model-picker-view-toggle="true"]:not([aria-hidden="true"])').filter({ visible: true });
         if (await trigger.count() !== 1) throw familyError(family);
         await trigger.click({ timeout: 5_000 });
       } else if (view !== "advanced") throw familyError(family);
     } else {
-      const trigger = menu.menu.locator('[role="menuitem"][aria-expanded]').filter({ visible: true });
+      const trigger = menu.menu.locator('[role="menuitem"][aria-expanded]:not([aria-hidden="true"])').filter({ visible: true });
       if (await powerView.count() !== 0 || await trigger.count() !== 1) throw familyError(family);
       if (await trigger.getAttribute("aria-expanded") === "false") await trigger.click({ timeout: 5_000 });
     }
