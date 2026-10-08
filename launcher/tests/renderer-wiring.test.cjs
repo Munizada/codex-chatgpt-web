@@ -174,6 +174,37 @@ test("post-runtime cleanup errors cannot reopen a half-stopped launcher", async 
   assert.equal(context.shutdownInProgress, false);
 });
 
+test("Electron quit failure after runtime stop falls back to immediate exit", async () => {
+  const vm = require("node:vm");
+  const source = electronMain.slice(
+    electronMain.indexOf("async function finalizeLauncherQuitResources()"),
+    electronMain.indexOf("async function start()"),
+  ) + "\nthis.requestQuit = requestQuit;";
+  const events = [];
+  const context = vm.createContext({
+    shutdownInProgress: false, exitCommitted: false, quitting: false,
+    runtimeHost: { currentOperation: () => null },
+    runtimeSupervisor: { shutdown: async () => events.push("runtime") },
+    browserHost: { currentOperation: () => null, persistSession: async () => events.push("persist"), destroy: () => events.push("destroy") },
+    browserControl: { close: async () => events.push("control") },
+    stopCatalogVerificationMonitor: () => events.push("monitor"),
+    showMainWindow: () => events.push("reopen"),
+    publishOperation: () => events.push("failed-operation"),
+    app: {
+      quit: () => { events.push("quit"); throw new Error("quit handler blocked"); },
+      exit: code => events.push(`exit:${code}`),
+    },
+    console: { error: () => events.push("warning") }, Error, JSON, String,
+  });
+  vm.runInContext(source, context);
+  const result = await context.requestQuit();
+  assert.equal(result.ok, false);
+  assert.match(result.message, /quit handler blocked/);
+  assert.deepEqual(events, ["runtime", "monitor", "persist", "destroy", "control", "quit", "warning", "exit:0"]);
+  assert.equal(context.exitCommitted, true);
+  assert.equal(context.quitting, true);
+});
+
 test("runtime shutdown failure keeps launcher open and skips post-shutdown cleanup", async () => {
   const vm = require("node:vm");
   const source = electronMain.slice(
