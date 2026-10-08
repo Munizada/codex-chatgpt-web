@@ -1,6 +1,6 @@
 import { selectedSkillFile } from "../src/adapters/chatgpt-web/skill-attachments";
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ChatGptCompactionHandoffAccepted, ChatGptWebAdapterError } from "../src/adapters/chatgpt-web/adapter-error";
@@ -15,6 +15,14 @@ import { LAUNCHER_BROWSER_HOST_KIND, LAUNCHER_BROWSER_IDLE_URL } from "../src/la
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+test("daemon rejects duplicate stall-recovery frames before asynchronous preparation", () => {
+  const src = readFileSync(new URL("../src/adapters/chatgpt-web/launcher-helper-client.ts", import.meta.url), "utf8");
+  expect(src).toContain("if (!pending.turn.prepareRecovery || pending.recoveryPreparationRequested)");
+  expect(src).toContain("pending.recoveryPreparationRequested = true;");
+  expect(src.indexOf("pending.recoveryPreparationRequested = true;"))
+    .toBeLessThan(src.indexOf("pending.turn.prepareRecovery!()"));
 });
 
 test("daemon streams browser lifecycle through the real helper process", async () => {
@@ -32,7 +40,12 @@ test("daemon streams browser lifecycle through the real helper process", async (
       if (prepared.skillFiles?.[0]?.text !== "<skill>\\n<name>ipc</name>\\n<path>/skills/ipc/SKILL.md</path>\\ncheck IPC\\n</skill>") throw new Error("Skill file lost in IPC");
       if (prepared.multipart.parts.length !== 6) throw new Error("Multipart context was lost");
       if (!turn.prepareRecovery) throw new Error("Stall recovery availability lost in helper IPC");
-      const recovery = await turn.prepareRecovery();
+      const firstRecovery = turn.prepareRecovery();
+      let duplicateRejected = false;
+      try { await turn.prepareRecovery(); }
+      catch (error) { duplicateRejected = String(error).includes("already pending"); }
+      if (!duplicateRejected) throw new Error("Helper accepted concurrent recovery requests");
+      const recovery = await firstRecovery;
       if (recovery.text !== "Continue after the proven stall." || recovery.images.length !== 0) {
         throw new Error("Stall recovery prompt lost in helper IPC");
       }
