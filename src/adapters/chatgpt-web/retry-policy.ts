@@ -17,7 +17,7 @@ interface RetryBudgetEntry {
 
 function exhaustedError(entry: RetryBudgetEntry): ChatGptWebAdapterError {
   return new ChatGptWebAdapterError(
-    `${entry.lastError.message} ChatGPT remained unavailable after several attempts.`,
+    `${entry.lastError.message} The ChatGPT Web turn failed repeatedly; the trace is required to distinguish a bridge defect from an external condition.`,
     {
       status: entry.lastError.status,
       errorType: entry.lastError.errorType,

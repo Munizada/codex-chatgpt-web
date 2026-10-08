@@ -19,6 +19,7 @@ interface PendingTurn {
   sent?: boolean;
   prepared?: CompiledChatGptWebPrompt & { release: () => void };
   recoveryPrepared?: CompiledChatGptWebPrompt & { release: () => void };
+  recoveryPreparationRequested?: boolean;
   localFailure?: Error;
   progressForwarding?: AbortController;
   acknowledgedMultipartStage?: number;
@@ -623,7 +624,7 @@ export class LauncherBrowserHelperClient {
         ));
       }
       else if (message.event === "recovery_prepare_requested") {
-        if (!pending.turn.prepareRecovery || pending.recoveryPrepared) {
+        if (!pending.turn.prepareRecovery || pending.recoveryPreparationRequested) {
           this.abortWithLocalFailure(
             message.id,
             new Error("Launcher browser helper requested an unavailable or duplicate stall-recovery prompt"),
@@ -631,6 +632,8 @@ export class LauncherBrowserHelperClient {
           );
           return;
         }
+        // Mark synchronously: two rapid helper frames must never prepare/release two prompts.
+        pending.recoveryPreparationRequested = true;
         void Promise.resolve().then(() => pending.turn.prepareRecovery!()).then(prepared => {
           if (this.pending.get(message.id) !== pending) {
             prepared.release();
