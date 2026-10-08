@@ -128,3 +128,12 @@ test("fork-only recovery paths remain wired on top of the 6.1.5 browser worker",
   expect(helperMain).toContain('message.type === "recovery_prepared_ack"');
   expect(helperMain).toContain('"stall-recovery-prompt"');
 });
+
+test("CI keeps each main commit's status independent of pending jobs for older SHAs", () => {
+  for (const file of [".github/workflows/ci.yml", ".github/workflows/patched-windows.yml"]) {
+    const workflow = readFileSync(file, "utf8");
+    expect(workflow).toContain("github.ref == 'refs/heads/main' && github.sha");
+    expect(workflow).toContain("cancel-in-progress: ${{ github.event_name == 'pull_request' }}");
+    expect(workflow).not.toContain("github.event.pull_request.number || github.ref }}");
+  }
+});
