@@ -97,6 +97,49 @@ async function selectGpt6Pro(picker: Picker) {
   }
 }
 
+/** Simulates the new ChatGPT GPT-6 menu entry and checks Sol, not Astra or stale 5.6. */
+async function selectGpt6Sol(effort: "low" | "medium" | "high" | "xhigh", picker: Picker) {
+  const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
+  try {
+    const page = await browser.newPage();
+    page.setDefaultTimeout(5_000);
+    const config = "<script>window.pickerHeader = " + (picker.header ? picker.header.toString() : "null")
+      + "; window.pickerStatus = " + picker.status.toString() + ";</script>";
+    await page.setContent(config + FIXTURE);
+    await page.locator('[data-model-selected="true"] [data-menu-row-content] span')
+      .evaluate(node => { node.textContent = "GPT-6"; });
+    const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
+    try {
+      const mode = await worker.selectModelAndEffort(page, CHATGPT_WEB_MODEL_ID, effort, {
+        localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true,
+      }, undefined, false, "6");
+      return { ok: true, label: mode.selection.label, draft: await page.locator("#prompt-textarea").innerText() };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : String(error),
+        draft: await page.locator("#prompt-textarea").innerText() };
+    }
+  } finally {
+    await browser.close();
+  }
+}
+
+const GPT6_SOL_PICKER: Picker = {
+  header: () => "6",
+  status: (effort, value) => effort + ", " + (value + 1) + " of 5.",
+};
+
+for (const [effort, label] of [["low", "Instant"], ["medium", "Medium"], ["high", "High"], ["xhigh", "Extra High"]] as const)
+test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("GPT-6 Sol " + label + " verifies the selected browser family and slider", async () => {
+  expect(await selectGpt6Sol(effort, GPT6_SOL_PICKER)).toEqual({ ok: true, label, draft: "Draft" });
+}, 60_000);
+
+test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("GPT-6 Sol does not submit with an old 5.6 picker state", async () => {
+  const result = await selectGpt6Sol("high", PICKERS.current);
+  expect(result.ok).toBe(false);
+  expect(result.message).toContain("ChatGPT model 6 could not be selected and verified");
+  expect(result.draft).toBe("Draft");
+}, 60_000);
+
 test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("GPT-6 Pro is verified from the current picker header when the slider announces only the effort", async () => {
   expect(await selectGpt6Pro(PICKERS.current)).toEqual({ ok: true, label: "Pro", usageModel: "gpt-6-pro", draft: "Draft" });
 }, 60_000);
