@@ -93,6 +93,7 @@ import {
   chatGptStoppedThinkingError,
   chatGptResponseIncompleteError,
 } from "./adapter-error";
+import { ChatGptBrowserStageTimeoutError, attributeChatGptWebFailure } from "./failure-attribution";
 import {
   ChatGptLunaCheckpointStream,
   type CapturedChatGptLunaCheckpoint,
@@ -1216,6 +1217,23 @@ export function resolveChatGptWebMultipartStagingMode(
  * healthy turn before its first observable progress.
  */
 export const CHATGPT_SEND_ACCEPTANCE_TIMEOUT_MS = 60_000;
+export const CHATGPT_STALL_RECOVERY_PREPARATION_TIMEOUT_MS = 60_000;
+
+/**
+ * An IPC response that arrives after its stage deadline must not leak a compiled prompt or allow
+ * an abandoned recovery lease to be used by a subsequent step.
+ */
+export async function prepareChatGptStallRecoveryWithLateRelease(
+  prepare: () => Promise<CompiledChatGptWebPrompt & { release: () => void }>,
+  signal: AbortSignal,
+): Promise<CompiledChatGptWebPrompt & { release: () => void }> {
+  const prepared = await prepare();
+  if (signal.aborted) {
+    prepared.release();
+    throw new DOMException("ChatGPT stall-recovery preparation arrived after its deadline", "AbortError");
+  }
+  return prepared;
+}
 /**
  * Large inline turns can be valid while still taking substantially longer for ChatGPT to ingest
  * than ordinary prompts. Scale only the first-evidence window for payloads that are objectively
@@ -2332,6 +2350,7 @@ class ChatGptBrowserDiagnostics {
         checkpoint,
         ...(error !== undefined ? {
           error: redactChatGptUiDiagnostic(error instanceof Error ? error.message : String(error)),
+          faultAttribution: attributeChatGptWebFailure(error),
         } : {}),
         ...(stateResult.status === "fulfilled"
           ? { state: sanitizeChatGptBrowserDiagnosticState(stateResult.value) }
@@ -2711,7 +2730,7 @@ export class ChatGptBrowserWorker {
           }
           stageTimedOut = true;
           controller.abort();
-          rejectTimeout(new Error(`ChatGPT browser stage timed out: ${stage}`));
+          rejectTimeout(new ChatGptBrowserStageTimeoutError(stage, timeoutMs));
         };
         timer = setTimeout(fireOrRearm, timeoutMs);
       });
@@ -6243,7 +6262,13 @@ export class ChatGptBrowserWorker {
           sameConversationRecoveries += 1;
           let recoveryPrepared: (CompiledChatGptWebPrompt & { release: () => void }) | undefined;
           try {
-            recoveryPrepared = await turn.prepareRecovery();
+            recoveryPrepared = await this.runStage(
+              turn.traceId,
+              "stall_recovery_prepare",
+              CHATGPT_STALL_RECOVERY_PREPARATION_TIMEOUT_MS,
+              stageSignal => prepareChatGptStallRecoveryWithLateRelease(turn.prepareRecovery!, stageSignal),
+              chatGptSuspensionClock,
+            );
             if (recoveryPrepared.multipart || recoveryPrepared.images.length > 0 || (recoveryPrepared.skillFiles?.length ?? 0) > 0) {
               throw new Error("ChatGPT stall recovery must be one inline text-only continuation");
             }
@@ -6554,9 +6579,11 @@ export class ChatGptBrowserWorker {
         }
         throw turn.abortSignal.reason;
       }
+      const attribution = attributeChatGptWebFailure(error);
       console.error(
         `[chatgpt-web] browser turn ${turn.traceId} failed:`
-        + ` ${redactChatGptUiDiagnostic(error instanceof Error ? error.message : String(error))}`,
+        + ` ${redactChatGptUiDiagnostic(error instanceof Error ? error.message : String(error))}`
+        + ` faultDomain=${attribution.domain} evidence=${attribution.evidence} confidence=${attribution.confidence}`,
       );
       if (diagnosticPage && !diagnosticPage.isClosed()) {
         await diagnostics.capture(diagnosticPage, "turn-failed", error);
