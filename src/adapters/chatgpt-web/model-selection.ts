@@ -15,7 +15,7 @@ function familyOption(menu: EffortMenu, family: ChatGptWebModelFamily) {
   return menu.menu.getByRole("menuitemradio", {
     name: family === "5.6" ? /^GPT[-\s]?5\.6\s+Sol(?:\s+Pro)?$/i
       // Simplified/Traditional Chinese and Japanese share 最新; Korean uses 최신.
-      : /^(?:Latest|最新|최신|GPT[-\s]?6(?:\s+Astra)?(?:\s+Pro)?)$/i,
+      : /^(?:Latest|最新|최신|GPT[-\s]?6(?:\s+Sol)?|GPT[-\s]?6(?:\s+Astra)?\s+Pro)$/i,
     exact: true,
     includeHidden: true,
   });
@@ -70,17 +70,17 @@ export function chatGptModelFamilyMatches(
   family: ChatGptWebModelFamily,
   effort: ChatGptWebAdapterEffort,
 ): boolean {
-  // Latest uses 5.6 for the existing lower-effort multipart acknowledgements and 6 for Pro.
-  // Never interpret a future Latest Pro model as 6, or a lower effort as the final Pro response.
-  const expected = family === "6" && effort !== "max" ? "5.6" : family;
+  // GPT-6 now powers Instant through Extra High via Sol, and Pro via Astra.
+  // Never accept a GPT-5.6 acknowledgement as proof of an explicit GPT-6 turn.
+  const expected = family;
   const states = descriptions.flatMap(text => {
     const match = /^(?:GPT[-\s]?)?(\d+(?:\.\d+)?)(?:\s+(Sol|Astra))?\s+([^,，]+)(?:[,，]|$)/i
       .exec(text.replace(/\s+/g, " ").trim());
     return match ? [{ version: match[1], name: match[2]?.toLowerCase(), mode: match[3]!.trim() }] : [];
   });
   return states.length > 0 && states.every(state => state.version === expected
-    && (!state.name || state.name === (expected === "5.6" ? "sol" : "astra"))
-    && (effort === "max" ? /^Pro$/i.test(state.mode) : !/^Pro$/i.test(state.mode)));
+    && (!state.name || state.name === (expected === "5.6" || effort !== "max" ? "sol" : "astra"))
+    && state.mode.toLowerCase() === ({ low: "instant", medium: "medium", high: "high", xhigh: "extra high", max: "pro" }[effort])));
 }
 
 export async function assertChatGptModelFamily(
