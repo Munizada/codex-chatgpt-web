@@ -22,7 +22,11 @@ This file is the canonical record for the custom reliability work maintained in
 - Native upstream base: **v6.1.5**
 - Upstream v6.1.5 release commit integrated into this fork:
   `92a356fac2292e3af5a97ab7ba634edd8d38621e`
-- Fork reliability revision: **v6.1.5-r10**
+- Fork reliability revision: **v6.1.5-r11**
+
+### v6.1.5-r11 audit hardening
+
+An evidence-based review of the r8-r10 incident history found additional launcher-helper IPC failure paths. A required MCP progress mirror could be silently downgraded, lifecycle callback failures could escape the helper stdout listener, and duplicate recovery requests could race prompt preparation. r11 fails those paths closed, tests them explicitly, and logs evidence-limited failure attribution (without claiming a browser deadline establishes an OpenAI outage). See [reliability-audit-2026-10-07.md](reliability-audit-2026-10-07.md) for scope, limitations and open items.
 
 ### v6.1.5-r10 large inline Send budget
 
