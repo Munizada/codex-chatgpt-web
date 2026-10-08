@@ -2,8 +2,10 @@
   <img src="assets/readme/hero.svg" width="960" alt="Switch to web models. Stay in Codex. Your ChatGPT plan. Your workflow. Maximum capabilities.">
 </p>
 
+<p align="center"><strong>Munizada fork (v6.1.5-r11):</strong> For the patched Windows build, use the <a href="https://github.com/Munizada/codex-chatgpt-web/actions/workflows/patched-windows.yml">fork Reliability Build workflow</a> and download its Windows installer artifact. GitHub may require sign-in; workflow artifacts expire. The macOS/Linux download badges and quick-install commands below point to the <strong>official upstream version, without this fork's patches</strong>.</p>
+
 <p align="center">
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v6.1.5/codex-web-gpt-6.1.5-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
+  <a href="https://github.com/Munizada/codex-chatgpt-web/actions/workflows/patched-windows.yml"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
   <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v6.1.5/codex-web-gpt-6.1.5-mac-arm64.dmg"><img src="assets/readme/download-macos.svg" width="224" height="64" alt="macOS · Apple silicon"></a>&nbsp;
   <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v6.1.5/codex-web-gpt-6.1.5-linux-x64.AppImage"><img src="assets/readme/download-linux.svg" width="224" height="64" alt="Linux · x64"></a>
 </p>
