@@ -4166,7 +4166,9 @@ export class ChatGptBrowserWorker {
     const sendButton = composer
       .locator("xpath=ancestor::form[1]")
       .locator(CHATGPT_SEND_BUTTON_SELECTOR);
-    await sendButton.waitFor({ state: "visible", timeout: browserStageTimeouts.send });
+    // The enclosing runStage owns the chosen 60s/180s Send budget. A second fixed locator
+    // timeout silently shortens large-inline and multipart stages when the UI is slow to re-render.
+    await sendButton.waitFor({ state: "visible", timeout: 0, signal: abortSignal });
     await settleChatGptUi();
     const sendEnableDeadline = Date.now() + CHATGPT_SEND_ENABLE_GRACE_MS;
     for (;;) {
