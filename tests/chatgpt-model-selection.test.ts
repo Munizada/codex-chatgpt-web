@@ -42,6 +42,19 @@ test("family confirmation separates Latest staging from the actual Pro response"
   expect(chatGptModelFamilyMatches(["6 Pro, 5 of 5."], "6", "xhigh")).toBe(false);
 });
 
+
+test("model verification accepts Unicode announcement punctuation without weakening identity", () => {
+  for (const separator of ["、", "，", "،", "؛", "：", "—", "。", ",", ";"]) {
+    expect(chatGptModelFamilyMatches([`6 Pro${separator}5 件中 5 番目。`], "6", "max")).toBeTrue();
+    expect(chatGptModelFamilyMatches([`GPT-5.6 Sol Pro${separator}translated position`], "5.6", "max")).toBeTrue();
+    expect(chatGptModelFamilyMatches([`6.1 Pro${separator}position`], "6", "max")).toBeFalse();
+    expect(chatGptModelFamilyMatches([`6 Sol Pro${separator}position`], "6", "max")).toBeFalse();
+    expect(chatGptModelFamilyMatches([`6 Pro${separator}position`, "5.6 Pro"], "6", "max")).toBeFalse();
+  }
+  expect(chatGptModelFamilyMatches(["\u2068６ Pro\u2069、position"], "6", "max")).toBeTrue();
+  expect(chatGptModelFamilyMatches(["6 Pro for better answers"], "6", "max")).toBeFalse();
+});
+
 test("active GPT-6 slider header works when the current ChatGPT picker has no model radio rows", async () => {
   for (const [announcement, family, effort, index] of [
     ["6 Instant", "6", "low", 0],
